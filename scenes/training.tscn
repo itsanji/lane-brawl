@@ -1,0 +1,51 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://src/game/training_stage.gd" id="1_stage"]
+[ext_resource type="Script" path="res://src/world/solid_block.gd" id="2_block"]
+
+[node name="Training" type="Node2D"]
+script = ExtResource("1_stage")
+
+[node name="Background" type="ColorRect" parent="."]
+z_index = -10
+offset_left = -400.0
+offset_top = -800.0
+offset_right = 2320.0
+offset_bottom = 1000.0
+mouse_filter = 2
+color = Color(0.082, 0.11, 0.161, 1)
+
+[node name="Level" type="Node2D" parent="."]
+
+[node name="Floor" type="Node2D" parent="Level"]
+position = Vector2(0, 440)
+script = ExtResource("2_block")
+size = Vector2(1920, 300)
+
+[node name="WallLeft" type="Node2D" parent="Level"]
+position = Vector2(-300, -800)
+script = ExtResource("2_block")
+size = Vector2(300, 1540)
+
+[node name="WallRight" type="Node2D" parent="Level"]
+position = Vector2(1920, -800)
+script = ExtResource("2_block")
+size = Vector2(300, 1540)
+
+[node name="PlatformLeft" type="Node2D" parent="Level"]
+position = Vector2(480, 300)
+script = ExtResource("2_block")
+size = Vector2(240, 14)
+one_way = true
+
+[node name="PlatformRight" type="Node2D" parent="Level"]
+position = Vector2(1200, 300)
+script = ExtResource("2_block")
+size = Vector2(240, 14)
+one_way = true
+
+[node name="PlatformHigh" type="Node2D" parent="Level"]
+position = Vector2(840, 170)
+script = ExtResource("2_block")
+size = Vector2(240, 14)
+one_way = true
