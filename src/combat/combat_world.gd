@@ -13,6 +13,8 @@ const TEXT_RED := Color("ff5b5e")
 var tick := 0
 var solids: Array[Rect2] = []
 var one_ways: Array[Rect2] = []
+var jump_pads: Array[Vector2] = []  ## centre of each pad, on the floor surface
+var grounds: Array[GroundStrip] = []  ## rolling-hill terrain on top of floors
 var fighters: Array[Fighter] = []
 var effects: Array[Dictionary] = []
 var training_mode := false  ## fighters can't drop below 1 HP
@@ -63,6 +65,7 @@ func move_body(f: Fighter) -> void:
 				p.x = (s.position.x - hw) if p.x < s.get_center().x else (s.end.x + hw)
 			f.vel.x = 0.0
 	var prev_y := p.y
+	var was_grounded := f.grounded
 	p.y += f.vel.y
 	f.grounded = false
 	f.on_one_way = false
@@ -82,6 +85,20 @@ func move_body(f: Fighter) -> void:
 				f.vel.y = 0.0
 				f.grounded = true
 				f.on_one_way = true
+	for g in grounds:
+		if not g.contains(p.x) or p.y > g.base_y + 6.0:
+			continue
+		var gy := g.height_at(p.x)
+		if f.vel.y >= 0.0:
+			# land, walk uphill, stick to the slope when walking downhill, or get pushed out if inside
+			var snap := 14.0 if was_grounded else 0.0
+			if p.y >= gy - snap:
+				p.y = gy
+				f.vel.y = 0.0
+				f.grounded = true
+				f.on_one_way = false
+		elif p.y > gy:
+			p.y = gy  # rising inside a hill (e.g. knocked into its side): push out on top
 	f.position = p
 
 

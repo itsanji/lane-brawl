@@ -38,6 +38,7 @@ var invuln := 0
 var hitstop := 0
 var air_jumps := 1
 var drop_timer := 0
+var pad_timer := 0
 var dodge_dir := 0
 var dodge_cooldown := 0
 var parry_timer := 0
@@ -81,6 +82,7 @@ func reset_to(spawn: Vector2, face: int) -> void:
 	hitstop = 0
 	air_jumps = data.air_jumps
 	drop_timer = 0
+	pad_timer = 0
 	dodge_cooldown = 0
 	parry_timer = 0
 	counter_timer = 0
@@ -232,6 +234,7 @@ func _tick_timers() -> void:
 	counter_timer = maxi(0, counter_timer - 1)
 	dodge_cooldown = maxi(0, dodge_cooldown - 1)
 	drop_timer = maxi(0, drop_timer - 1)
+	pad_timer = maxi(0, pad_timer - 1)
 	flash = maxi(0, flash - 1)
 	if state != &"guard" and state != &"blockstun":
 		guard = minf(CombatRules.GUARD_MAX, guard + CombatRules.GUARD_REGEN)
@@ -295,6 +298,9 @@ func _neutral() -> void:
 	if grounded:
 		vel.x = i.x * data.run_speed
 		state = &"run" if i.x != 0 else &"idle"
+	elif pad_timer > 0:
+		vel.x *= 0.85  # flying straight up through the connector above
+		state = &"air"
 	else:
 		vel.x += (i.x * data.run_speed - vel.x) * CombatRules.AIR_CONTROL
 		state = &"air"
@@ -417,65 +423,165 @@ func _apply_physics() -> void:
 	world.move_body(self)
 	if grounded:
 		air_jumps = data.air_jumps
+		if (state == &"idle" or state == &"run") and input.y < 0:
+			for pad in world.jump_pads:
+				if absf(position.y - pad.y) < 1.0 and absf(position.x - pad.x) < CombatRules.PAD_HALF_WIDTH:
+					vel = Vector2(0, CombatRules.PAD_VELOCITY)
+					grounded = false
+					pad_timer = CombatRules.PAD_FLIGHT_FRAMES
+					state = &"air"
+					world.add_effect(&"ring", pad, {"radius": 60.0, "life": 14, "color": Color("ffc443")})
+					break
 
 
 # ---------------------------------------------------------------- drawing
+# A small bug knight in the spirit of Hollow Knight: pale horned mask, dark cloak with a team-coloured
+# hem, a scarf in the fighter's colour, and a nail. Purely visual; reads the sim state only.
+
+const MASK := Color("efe8dc")
+const CLOAK := Color("1b1f2e")
+const EYE := Color("0b0d14")
+const NAIL := Color("d9dde6")
+
 
 func _draw() -> void:
-	var w := body_size.x
-	var h := body_size.y
 	var team_color := Color("4ea4ff") if team == 0 else Color("ff5b5e")
-	var alpha := 0.5 if (invuln > 0 and invuln < 900 and state != &"knockdown" and state != &"tumble" and (Engine.get_physics_frames() >> 2) % 2 == 1) else 1.0
-	draw_set_transform(Vector2.ZERO)
-	_draw_ellipse(Vector2(0, 0), Vector2(22, 5), Color(0, 0, 0, 0.35))
+	var t := float(world.tick) if world != null else 0.0
+	var blink := invuln > 0 and invuln < 900 and state != &"knockdown" and state != &"tumble" and int(t / 4.0) % 2 == 1
+	var alpha := 0.55 if blink else 1.0
+	if grounded:
+		_draw_ellipse(Vector2.ZERO, Vector2(20, 4.5), Color(0, 0, 0, 0.35))
+		_draw_ellipse_arc(Vector2(0, -1), Vector2(19, 4.5), 0, TAU, Color(team_color, 0.5))
+
 	var rot := 0.0
 	match state:
 		&"airhit":
 			rot = -facing * 0.45
 		&"tumble":
-			rot = Engine.get_physics_frames() * 0.35
+			rot = t * 0.35
 		&"knockdown", &"ko":
 			rot = -facing * PI / 2.0
 		&"hitstun", &"guardbreak":
-			rot = -facing * 0.16
-	var pivot := Vector2(0, -h / 2.0)
-	draw_set_transform(pivot, rot)
-	var body := Rect2(-w / 2.0, -h / 2.0 + 24.0, w, h - 24.0)
-	var head := Vector2(0, -h / 2.0 + 12.0)
-	var fill := Color(data.color, alpha)
-	draw_rect(body, fill)
-	draw_rect(body, Color(team_color, alpha), false, 3.0)
-	draw_rect(Rect2(body.position.x + 2, body.position.y + 22, w - 4, 5), Color(team_color, alpha))
-	draw_circle(head, 14.0, fill)
-	draw_arc(head, 14.0, 0, TAU, 24, Color(team_color, alpha), 3.0)
-	draw_rect(Rect2(head.x + (3 if facing > 0 else -12), head.y - 4, 9, 5), Color(0.04, 0.06, 0.09, alpha))
-	if state == &"attack" and move != null and move_frame <= move.startup:
-		var k := 0.25 + 0.5 * move_frame / maxf(1.0, move.startup)
-		var tint := Color(1, 0.36, 0.37, k) if move.grab else Color(1, 1, 1, k)
-		draw_rect(body, tint)
-		draw_circle(head, 14.0, tint)
-	if flash > 0:
-		draw_rect(body, Color(1, 0.77, 0.26, flash / 14.0))
+			rot = -facing * 0.18
+		&"run":
+			rot = facing * 0.08
+	draw_set_transform(Vector2(0, -36), rot)
+	var o := Vector2(0, 36)  # local feet position in the rotated frame
+
+	var speed := absf(vel.x)
+	var stride := position.x * 0.09
+	var air := not grounded
+	var anticipation := state == &"attack" and move != null and move_frame <= move.startup
+	var squash := 0.94 if anticipation else 1.0
+	var breathe := sin(t * 0.08) * 1.2 if state == &"idle" else 0.0
+
+	# legs
+	var leg_l := 0.0
+	var leg_r := 0.0
+	if state == &"run":
+		leg_l = sin(stride) * 6.0
+		leg_r = -leg_l
+	var leg_len := 6.0 if air else 10.0
+	for lx in [-5.0 + leg_l, 5.0 + leg_r]:
+		draw_rect(Rect2(o + Vector2(lx - 1.8, -leg_len), Vector2(3.6, leg_len)), Color(CLOAK.darkened(0.3), alpha))
+
+	# cloak: shoulders to a tattered hem that trails behind when moving
+	var shoulder := o + Vector2(facing * minf(speed, 6.0) * 0.4, -54.0 * squash + breathe)
+	var trail := -facing * minf(speed, 7.0) * 1.3 + (sin(t * 0.25) * 1.5 if air else 0.0)
+	var hem_y := o.y - (12.0 if air else 9.0)
+	var flare := 19.0 if air else 16.0
+	var cloak := PackedVector2Array([
+		shoulder + Vector2(-11, 0), shoulder + Vector2(11, 0),
+		Vector2(o.x + flare + trail, hem_y), Vector2(o.x + flare * 0.45 + trail, hem_y + 5),
+		Vector2(o.x + trail * 1.2, hem_y - 1), Vector2(o.x - flare * 0.45 + trail, hem_y + 5),
+		Vector2(o.x - flare + trail, hem_y)])
+	draw_colored_polygon(cloak, Color(CLOAK, alpha))
+	draw_polyline(PackedVector2Array([cloak[2], cloak[3], cloak[4], cloak[5], cloak[6]]), Color(team_color, 0.85 * alpha), 2.0, true)
+
+	# scarf: wraps the neck, tail streams behind
+	var neck := shoulder + Vector2(0, -2)
+	var tail_len := 14.0 + minf(speed, 7.0) * 3.0 + (8.0 if air else 0.0)
+	var scarf := PackedVector2Array()
+	for k in 5:
+		var u := k / 4.0
+		scarf.append(neck + Vector2(-facing * tail_len * u, u * 6.0 + sin(t * 0.3 + u * 4.0) * 3.0 * u))
+	draw_rect(Rect2(neck + Vector2(-9, -3), Vector2(18, 5)), Color(data.color, alpha))
+	draw_polyline(scarf, Color(data.color, alpha), 4.0, true)
+
+	# nail: held low behind; raised behind the head while winding up; vertical in front when guarding
+	if state != &"attack" or anticipation:
+		var hand := shoulder + Vector2(facing * 7.0, 14.0)
+		var tip := hand + Vector2(-facing * 20.0, 16.0)
+		if anticipation:
+			tip = hand + Vector2(-facing * 24.0, -14.0)
+		elif state == &"guard" or state == &"blockstun":
+			hand = shoulder + Vector2(facing * 13.0, 10.0)
+			tip = hand + Vector2(facing * 3.0, -26.0)
+		draw_line(hand, tip, Color(NAIL, alpha), 2.5, true)
+
+	# mask with horns and eyes
+	var head := shoulder + Vector2(facing * 2.0, -13.0)
+	var mask_col := Color(1, 1, 1, alpha) if (state == &"hitstun" and state_timer > 10) or flash > 0 else Color(MASK, alpha)
+	for side: float in [-1.0, 1.0]:
+		var base := head + Vector2(side * 6.5, -8.0)
+		draw_colored_polygon(PackedVector2Array([
+			base + Vector2(-2.5, 0), base + Vector2(2.5, 0),
+			base + Vector2(side * 4.0 + 1.0, -9.0), base + Vector2(side * 5.5, -15.0), base + Vector2(side * 2.0 - 1.5, -9.0)]), mask_col)
+	_draw_ellipse(head, Vector2(11.5, 12.5) * Vector2(1.0, squash), mask_col)
+	var eye_shift := facing * 2.5
+	for ex: float in [-4.0, 4.0]:
+		_draw_ellipse(head + Vector2(ex + eye_shift, 1.5), Vector2(2.6, 4.2), Color(EYE, alpha))
+	if anticipation and move.grab:
+		_draw_ellipse(head, Vector2(13, 14), Color(1, 0.36, 0.37, 0.35))
 	draw_set_transform(Vector2.ZERO)
+
 	if state == &"guard" or state == &"blockstun":
 		var gp := guard / CombatRules.GUARD_MAX
-		var gc := Color(0.63, 0.82, 1, 0.9) if gp > 0.5 else (Color(1, 0.77, 0.26, 0.9) if gp > 0.25 else Color(1, 0.36, 0.37, 0.9))
+		var gc := Color(0.63, 0.82, 1, 0.8) if gp > 0.5 else (Color(1, 0.77, 0.26, 0.8) if gp > 0.25 else Color(1, 0.36, 0.37, 0.8))
 		var c := 0.0 if facing > 0 else PI
-		draw_arc(Vector2(facing * 4, -h / 2.0), 40, c - 1.0, c + 1.0, 16, gc, 4.0)
+		draw_arc(Vector2(facing * 6, -40), 38, c - 1.0, c + 1.0, 18, gc, 3.0)
 		if parry_timer > 0:
-			draw_arc(Vector2(facing * 4, -h / 2.0), 46, c - 1.0, c + 1.0, 16, Color("ffc443"), 2.0)
+			draw_arc(Vector2(facing * 6, -40), 44, c - 1.0, c + 1.0, 18, Color("ffc443"), 2.0)
+
+	# slash: a white crescent sweeping across the hitbox during active frames
 	var hb := active_hitbox()
 	if hb.has_area():
-		var local := Rect2(hb.position - position, hb.size)
-		_draw_ellipse(local.get_center(), local.size / 2.0, Color(data.color, 0.5))
-		var ex_arc := 0.0 if facing > 0 else PI
-		_draw_ellipse_arc(local.get_center(), local.size / 2.0, ex_arc - 1.1, ex_arc + 1.1, Color(1, 1, 1, 0.8))
+		_draw_slash(Rect2(hb.position - position, hb.size))
+
+	if hp < data.max_hp and state != &"ko":
+		var bw := 36.0
+		draw_rect(Rect2(-bw / 2.0, -104, bw, 3), Color(0, 0, 0, 0.6))
+		draw_rect(Rect2(-bw / 2.0, -104, bw * clampf(hp / data.max_hp, 0.0, 1.0), 3), team_color)
+
 	if world != null and world.debug_draw:
 		var hurt := hurtbox()
 		draw_rect(Rect2(hurt.position - position, hurt.size), Color("9fd356"), false, 1.0)
 		if hb.has_area():
 			draw_rect(Rect2(hb.position - position, hb.size), Color(1, 0.24, 0.24, 0.35))
 			draw_rect(Rect2(hb.position - position, hb.size), Color("ff5b5e"), false, 1.0)
+
+
+func _draw_slash(local: Rect2) -> void:
+	var c := local.get_center()
+	var radii := local.size * 0.5
+	var progress := clampf(float(move_frame - move.startup) / maxf(1.0, move.active), 0.0, 1.0)
+	var mid := 0.0 if facing > 0 else PI
+	if local.size.y > local.size.x * 1.15:
+		mid = -PI / 2.0  # launchers and risers sweep upward
+		c.y += radii.y * 0.25
+	var span := lerpf(0.9, 2.4, progress)
+	var a0 := mid - span * 0.5
+	var outer := PackedVector2Array()
+	var inner := PackedVector2Array()
+	for k in 13:
+		var a := lerpf(a0, a0 + span, k / 12.0)
+		var thickness := sin(PI * k / 12.0)
+		outer.append(c + Vector2(cos(a) * radii.x, sin(a) * radii.y))
+		inner.append(c + Vector2(cos(a) * radii.x * (1.0 - 0.32 * thickness), sin(a) * radii.y * (1.0 - 0.32 * thickness)))
+	inner.reverse()
+	var shape := outer + inner
+	draw_colored_polygon(shape, Color(1, 1, 1, 0.85 * (1.0 - progress * 0.4)))
+	draw_polyline(outer, Color(data.color, 0.9), 2.0, true)
 
 
 func _draw_ellipse(center: Vector2, radii: Vector2, color: Color) -> void:
@@ -488,7 +594,7 @@ func _draw_ellipse(center: Vector2, radii: Vector2, color: Color) -> void:
 
 func _draw_ellipse_arc(center: Vector2, radii: Vector2, from: float, to: float, color: Color) -> void:
 	var pts := PackedVector2Array()
-	for k in 13:
-		var a := lerpf(from, to, k / 12.0)
+	for k in 25:
+		var a := lerpf(from, to, k / 24.0)
 		pts.append(center + Vector2(cos(a) * radii.x, sin(a) * radii.y))
-	draw_polyline(pts, color, 2.0)
+	draw_polyline(pts, color, 1.5)

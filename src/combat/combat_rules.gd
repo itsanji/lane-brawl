@@ -12,6 +12,9 @@ const AIR_JUMP_VELOCITY := -15.0
 const AIR_CONTROL := 0.18
 const BODY_SIZE := Vector2(34, 82)
 const DROP_FRAMES := 14
+const PAD_VELOCITY := -29.5         ## jump pad launch (hold Up on a pad)
+const PAD_HALF_WIDTH := 36.0
+const PAD_FLIGHT_FRAMES := 40       ## reduced air control while pad-launched
 
 const BUFFER_FRAMES := 8
 const EX_CHECK_FRAME := 8            ## a skill still held on this frame becomes EX
