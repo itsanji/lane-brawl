@@ -3,7 +3,7 @@ extends SceneTree
 ## Turn them into a video with ffmpeg:  ffmpeg -framerate 30 -i <dir>/f%04d.png -pix_fmt yuv420p clip.mp4
 ##   xvfb-run -a -s "-screen 0 1280x720x24" godot --path . --rendering-driver opengl3 -s res://tools/clip.gd -- <out_dir>
 
-const SEGMENTS := [Vector3(2300, 500, 200), Vector3(2500, 1300, 160), Vector3(2350, 2100, 140)]  ## x, y, ticks
+const SEGMENTS := [Vector3(2300, 620, 200), Vector3(2500, 1980, 160), Vector3(2350, 3340, 140)]  ## x, y (a floor), ticks
 
 
 class Walker extends FighterController:
@@ -18,6 +18,7 @@ class Walker extends FighterController:
 
 
 func _initialize() -> void:
+	physics_interpolation = false  # we step the sim by hand here
 	var args := OS.get_cmdline_user_args()
 	var out_dir := args[0] if args.size() > 0 else "user://clip"
 	DirAccess.make_dir_recursive_absolute(out_dir)

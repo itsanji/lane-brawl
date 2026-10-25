@@ -13,6 +13,7 @@ var camera: Camera2D
 var hud: TrainingHud
 var _dummy_idle := 0
 var _player_idle := 0
+var _look := 0.0
 
 
 func _ready() -> void:
@@ -45,6 +46,7 @@ func _ready() -> void:
 	camera.limit_top = -260
 	camera.limit_bottom = 640
 	camera.position = player.position + Vector2(0, -120)
+	camera.process_callback = Camera2D.CAMERA2D_PROCESS_PHYSICS
 	add_child(camera)
 	camera.make_current()
 
@@ -58,6 +60,17 @@ func _ready() -> void:
 func _physics_process(_delta: float) -> void:
 	if auto_tick:
 		step()
+	_update_camera()
+
+
+## Moves the camera once per tick (physics interpolation then smooths it on high-refresh screens).
+## Look-ahead eases toward where you're facing/moving instead of snapping on every turn.
+func _update_camera() -> void:
+	if camera == null:
+		return
+	_look = lerpf(_look, player.facing * 45.0 + player.vel.x * 6.0, 0.05)
+	var target := _camera_target()
+	camera.position = Vector2(lerpf(camera.position.x, target.x + _look, 0.16), lerpf(camera.position.y, target.y, 0.1))
 
 
 func step() -> void:
@@ -65,11 +78,13 @@ func step() -> void:
 	_apply_training_rules()
 
 
-func _process(delta: float) -> void:
+func _camera_target() -> Vector2:
+	return player.position + Vector2(0, -120.0)
+
+
+func _process(_delta: float) -> void:
 	if camera == null:
 		return
-	var target := player.position + Vector2(player.facing * 60.0, -120.0)
-	camera.position = camera.position.lerp(target, 1.0 - exp(-8.0 * delta))
 	camera.offset = Vector2(randf_range(-shake, shake), randf_range(-shake, shake)) if shake > 0.0 else Vector2.ZERO
 
 
@@ -94,11 +109,11 @@ func reset_positions() -> void:
 func _apply_training_rules() -> void:
 	_dummy_idle = _dummy_idle + 1 if dummy.combo == 0 and dummy.is_actionable() else 0
 	if _dummy_idle > REFILL_AFTER:
-		dummy.hp = dummy.data.max_hp
+		dummy.hp = dummy.max_hp()
 		dummy.guard = CombatRules.GUARD_MAX
 	_player_idle = _player_idle + 1 if player.combo == 0 and player.is_actionable() else 0
 	if _player_idle > REFILL_AFTER * 4:
-		player.hp = player.data.max_hp
+		player.hp = player.max_hp()
 	if dummy_controller.mode == DummyController.Mode.BURST:
 		dummy.meter = CombatRules.METER_MAX
 	for f in fighters:

@@ -64,6 +64,18 @@ func tap(w: CombatWorld, f: Fighter, button: StringName, y := 0, x := 0) -> void
 	p.x = 0
 
 
+## Hold a button for `ticks` ticks, then release it (e.g. a full-height jump).
+func hold(w: CombatWorld, f: Fighter, button: StringName, ticks: int, y := 0, x := 0) -> void:
+	var p := pad(f)
+	p.set(button, true)
+	p.y = y
+	p.x = x
+	run(w, ticks)
+	p.set(button, false)
+	p.y = 0
+	p.x = 0
+
+
 func run_until(w: CombatWorld, cond: Callable, max_ticks := 120) -> bool:
 	for _i in max_ticks:
 		if cond.call():

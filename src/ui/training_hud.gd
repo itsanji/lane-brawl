@@ -6,7 +6,7 @@ const PANEL := Color(0.06, 0.08, 0.12, 0.86)
 const GOLD := Color("ffc443")
 const MUTED := Color("97a3b8")
 const GREEN := Color("9fd356")
-const HELP := "Move A/D · Jump Space · Light J · Heavy K (W+K launch, S+K sweep) · Skills U, I · Ult O · Guard L"
+const HELP := "Move A/D · Jump W/Space (hold = higher) · Dash Shift · Light J · Heavy K (W+K launch, S+K sweep) · Skills U, I · Ult O · Guard L"
 const HELP2 := "Guard+direction dodge · Guard+J grab · Guard+K burst (when hit) · S+Space drop · F1 hitboxes · F2 dummy · F3 reset · F4 meter"
 
 var stage: CombatWorld
@@ -19,6 +19,11 @@ func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	stage.combat_event.connect(_on_combat_event)
+	var bar := SkillBar.new()
+	bar.fighter = stage.get("player")
+	bar.show_vitals = false
+	bar.bottom_margin = 92.0
+	add_child(bar)
 
 
 func _process(_delta: float) -> void:
@@ -57,8 +62,8 @@ func _draw() -> void:
 	# Player panel
 	draw_rect(Rect2(10, 10, 290, 104), PANEL)
 	draw_string(font, Vector2(20, 34), "%s · %s" % [player.data.display_name.to_upper(), player.data.role], HORIZONTAL_ALIGNMENT_LEFT, -1, 18, player.data.color)
-	_bar(Vector2(20, 42), Vector2(270, 14), player.hp / player.data.max_hp, GREEN)
-	draw_string(font, Vector2(24, 54), "%d / %d" % [ceili(player.hp), int(player.data.max_hp)], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.04, 0.06, 0.09))
+	_bar(Vector2(20, 42), Vector2(270, 14), player.hp / player.max_hp(), GREEN)
+	draw_string(font, Vector2(24, 54), "%d / %d" % [ceili(player.hp), int(player.max_hp())], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.04, 0.06, 0.09))
 	for k in 3:
 		var fill := clampf((player.meter - k * CombatRules.METER_BAR) / CombatRules.METER_BAR, 0.0, 1.0)
 		_bar(Vector2(20 + k * 64, 62), Vector2(60, 9), fill, GOLD if fill >= 1.0 else Color("8a6a22"))
@@ -77,7 +82,7 @@ func _draw() -> void:
 	var dx := vp.x - 300
 	draw_rect(Rect2(dx, 10, 290, 64), PANEL)
 	draw_string(font, Vector2(dx + 10, 32), "DUMMY · F2: %s" % dummy_ctrl.mode_name(), HORIZONTAL_ALIGNMENT_LEFT, 270, 14, Color("ffb0b2"))
-	_bar(Vector2(dx + 10, 40), Vector2(270, 12), dummy.hp / dummy.data.max_hp, Color("ff5b5e"))
+	_bar(Vector2(dx + 10, 40), Vector2(270, 12), dummy.hp / dummy.max_hp(), Color("ff5b5e"))
 	_bar(Vector2(dx + 10, 58), Vector2(130, 5), dummy.guard / CombatRules.GUARD_MAX, Color("a0d2ff"))
 	draw_string(font, Vector2(dx + 146, 64), "state: %s" % dummy.state, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, MUTED)
 

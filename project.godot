@@ -28,6 +28,7 @@ window/handheld/orientation=4
 
 common/physics_ticks_per_second=60
 common/max_physics_steps_per_frame=8
+common/physics_interpolation=true
 
 [rendering]
 

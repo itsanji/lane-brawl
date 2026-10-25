@@ -8,7 +8,7 @@ extends Node2D
 @export var factor := 1.0
 
 
-func _process(_delta: float) -> void:
+func _physics_process(_delta: float) -> void:  # per tick, in step with the camera (both get interpolated)
 	if Engine.is_editor_hint():
 		position.x = 0.0
 		return

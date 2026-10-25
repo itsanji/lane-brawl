@@ -26,14 +26,14 @@ const PALETTES := {
 		"glow": Color("fff0d8"), "shaft": Color(1, 0.96, 0.85, 0.08), "particle": Color("ffc4da"),
 		"pad": Color("ff9cc2"),
 	},
-	S.SUMMER: {
-		"sky_top": Color("0a2723"), "sky_bottom": Color("1d4d3c"), "fog": Color("2f6e58"),
-		"far": Color("2e6553"), "mid": Color("153a30"), "near": Color("050f0c"),
-		"foliage": [Color("2f7a55"), Color("3f9a64"), Color("26624a")],
-		"accent": Color("c8ff8a"), "accent2": Color("7fe0a8"),
-		"rock": Color("0a1411"), "rock_rim": Color("3f8a6a"), "cap": Color("2f7a55"), "cap2": Color("4fae74"),
-		"glow": Color("b8ffd8"), "shaft": Color(0.75, 1, 0.88, 0.07), "particle": Color("d8ff8a"),
-		"pad": Color("7dffb0"),
+	S.SUMMER: {  # the jungles: enclosed, deep and bioluminescent, nothing like the open-air lanes
+		"sky_top": Color("030c0b"), "sky_bottom": Color("0b2620"), "fog": Color("1d5446"),
+		"far": Color("123b33"), "mid": Color("0c2a24"), "near": Color("020807"),
+		"foliage": [Color("1f6a4c"), Color("2d855a"), Color("185a43")],
+		"accent": Color("8affd0"), "accent2": Color("c58cff"),
+		"rock": Color("07120f"), "rock_rim": Color("2f7e66"), "cap": Color("1f6a4c"), "cap2": Color("3f9e70"),
+		"glow": Color("7dffd0"), "shaft": Color(0.6, 1.0, 0.85, 0.08), "particle": Color("b8ffdf"),
+		"pad": Color("7dffb0"), "bio": Color("5cf2c4"), "bio2": Color("b07cff"),
 	},
 	S.FALL: {
 		"sky_top": Color("3a2626"), "sky_bottom": Color("94532c"), "fog": Color("c07a46"),

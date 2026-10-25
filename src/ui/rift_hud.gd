@@ -1,13 +1,16 @@
 class_name RiftHud
 extends Control
-## Map HUD: minimap, Hollow Knight-style area title card when you enter a band, and a short controls hint.
+## Map HUD: minimap, Hollow Knight-style area title card when you enter a band, a short controls hint,
+## and in a match: score/clock/structures bar, kill feed, respawn countdown and the victory banner.
 
 const MAP_SIZE := Vector2(340, 124)
 const GOLD := Color("d8c38f")
 const TITLE_IN := 0.6
 const TITLE_HOLD := 2.2
 const TITLE_OUT := 1.0
-const HINT := "Hold W on a glowing mushroom to bounce up · S + Space drops through · Base columns: jump up the ledges · F2 dummy · F3 back to base"
+const HINT := "Beat the red Kael bot: push with your minions · last-hit for gold · towers fall outer → inner → gate → core · F2 bot difficulty"
+const BLUE := Color("4ea4ff")
+const RED := Color("ff5b5e")
 
 var stage: CombatWorld
 var _band := -1
@@ -24,6 +27,10 @@ func _ready() -> void:
 	_title_font.font_names = PackedStringArray(["Cinzel", "Trajan Pro", "Cormorant Garamond", "Georgia", "DejaVu Serif", "Noto Serif", "serif"])
 	_title_font.font_weight = 500
 	_font = ThemeDB.fallback_font
+	var bar := SkillBar.new()
+	bar.fighter = stage.get("player")
+	bar.bottom_margin = 34.0
+	add_child(bar)
 
 
 func _process(delta: float) -> void:
@@ -43,6 +50,12 @@ func _draw() -> void:
 	var vp := get_viewport_rect().size
 	_draw_minimap(Vector2(vp.x - MAP_SIZE.x - 16, 14))
 	_draw_title(vp)
+	var lane: LaneMatch = stage.lane
+	if lane != null:
+		_draw_match_bar(lane, vp)
+		_draw_feed(lane, Vector2(vp.x - 16, MAP_SIZE.y + 50))
+		_draw_respawn(vp)
+		_draw_result(lane, vp)
 	if _hint_time < 14.0:
 		var a := clampf(14.0 - _hint_time, 0.0, 1.0)
 		draw_rect(Rect2(0, vp.y - 30, vp.x, 30), Color(0.02, 0.03, 0.05, 0.7 * a))
@@ -89,12 +102,26 @@ func _draw_minimap(at: Vector2) -> void:
 		var c: Vector2 = to_map.call(Vector2(cx, RiftLayout.FLOORS[2] - 150.0))
 		draw_texture_rect(Painter.glow_texture(), Rect2(c - Vector2(14, 14), Vector2(28, 28)), false, Color(tc, 0.6))
 		draw_colored_polygon(PackedVector2Array([c + Vector2(0, -7), c + Vector2(4, 0), c + Vector2(0, 7), c + Vector2(-4, 0)]), tc.lightened(0.3))
-	for pad in stage.jump_pads:
-		draw_circle(to_map.call(pad) + Vector2(0, -1.5), 1.4, Color(GOLD, 0.9))
+	for i: int in RiftLayout.BRIDGES:
+		for bx: float in RiftLayout.BRIDGES[i]:
+			var bp: Vector2 = to_map.call(Vector2(bx, RiftLayout.FLOORS[i]))
+			draw_line(bp - Vector2(2.5, 0), bp + Vector2(2.5, 0), Color(GOLD, 0.95), 2.0)
+	# lane: structures and minions
+	for st in stage.structures:
+		var c: Vector2 = to_map.call(st.position) + Vector2(0, -4)
+		var tc := BLUE if st.team == 0 else RED
+		var col := tc if st.is_alive() else Color(0.35, 0.37, 0.42)
+		if st.kind == Structure.Kind.CORE:
+			draw_colored_polygon(PackedVector2Array([c + Vector2(0, -6), c + Vector2(4, 0), c + Vector2(0, 6), c + Vector2(-4, 0)]), col.lightened(0.3))
+		else:
+			draw_rect(Rect2(c - Vector2(2.5, 4), Vector2(5, 7)), Color(0, 0, 0, 0.8))
+			draw_rect(Rect2(c - Vector2(1.5, 3), Vector2(3, 5)), col)
+	for mn in stage.minions:
+		draw_rect(Rect2(to_map.call(mn.position) + Vector2(-1, -3), Vector2(2, 2)), (BLUE if mn.team == 0 else RED).lightened(0.3))
 	# fighters
 	var player: Fighter = stage.get("player")
 	for f in stage.fighters:
-		if f == player:
+		if f == player or f.is_ko():
 			continue
 		var c: Vector2 = to_map.call(f.position) + Vector2(0, -3)
 		draw_circle(c, 3.2, Color(0, 0, 0, 0.8))
@@ -181,3 +208,109 @@ func _draw_title(vp: Vector2) -> void:
 	draw_colored_polygon(PackedVector2Array([Vector2(cx, ly - 6), Vector2(cx + 6, ly), Vector2(cx, ly + 6), Vector2(cx - 6, ly)]), Color(accent, a))
 	var sw := _title_font.get_string_size(sub, HORIZONTAL_ALIGNMENT_LEFT, -1, 18).x
 	draw_string(_title_font, Vector2(cx - sw * 0.5, ly + 28), sub, HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color(0.85, 0.88, 0.93, 0.9 * a))
+
+
+# ---------------------------------------------------------------- match
+
+func _draw_match_bar(lane: LaneMatch, vp: Vector2) -> void:
+	var w := 300.0
+	var r := Rect2(vp.x * 0.5 - w * 0.5 - 140.0, 10, w, 46)
+	var box := StyleBoxFlat.new()
+	box.bg_color = Color(0.03, 0.04, 0.065, 0.85)
+	box.set_corner_radius_all(10)
+	box.set_border_width_all(1)
+	box.border_color = Color(GOLD, 0.45)
+	draw_style_box(box, r)
+	var cx := r.get_center().x
+	var secs := int(lane.clock())
+	var clock := "%d:%02d" % [secs / 60, secs % 60]
+	_text_center(clock, Vector2(cx, r.position.y + 21), 18, Color("e9e2cf"))
+	if lane.winner < 0:
+		var wave := ceili(lane.ticks_to_next_wave() / float(CombatRules.TICK_RATE))
+		_text_center("wave in %ds" % wave, Vector2(cx, r.position.y + 38), 11, Color(0.6, 0.65, 0.72))
+	for team in 2:
+		var side := -1.0 if team == 0 else 1.0
+		var tc := BLUE if team == 0 else RED
+		_text_center(str(lane.team_kills[team]), Vector2(cx + side * 52.0, r.position.y + 24), 22, tc.lightened(0.2))
+		var x := cx + side * 92.0
+		for k in 4:  # structures, outer → core, from the centre outwards
+			var st: Structure = lane._chain[team][k]
+			var c := Vector2(x + side * k * 14.0, r.position.y + 23)
+			var col := tc if st.is_alive() else Color(0.3, 0.32, 0.37)
+			if st.kind == Structure.Kind.CORE:
+				draw_colored_polygon(PackedVector2Array([c + Vector2(0, -7), c + Vector2(5, 0), c + Vector2(0, 7), c + Vector2(-5, 0)]), col)
+			elif st.kind == Structure.Kind.GATE:
+				draw_arc(c + Vector2(0, 3), 5.0, PI, TAU, 8, col, 2.5)
+				draw_line(c + Vector2(-5, 3), c + Vector2(-5, 7), col, 2.5)
+				draw_line(c + Vector2(5, 3), c + Vector2(5, 7), col, 2.5)
+			else:
+				draw_rect(Rect2(c - Vector2(3, 6), Vector2(6, 13)), col)
+			if st.is_alive() and st.hp < st.max_hp:
+				draw_rect(Rect2(c + Vector2(-5, 10), Vector2(10 * st.hp / st.max_hp, 2)), col.lightened(0.3))
+	var buffs := ""
+	var player: Fighter = stage.get("player")
+	if lane.wyrm_stacks[player.team] > 0:
+		buffs += "Wyrm +%d%% dmg  " % (lane.wyrm_stacks[player.team] * 10)
+	if lane.titan_timer[player.team] > 0:
+		buffs += "Titan minions %ds" % ceili(lane.titan_timer[player.team] / 60.0)
+	var bot: LaneBot = stage.get("bot")
+	if bot != null:
+		buffs = "vs %s bot (F2)   " % bot.difficulty_name() + buffs
+	if buffs != "":
+		_text_center(buffs, Vector2(cx, r.end.y + 14), 12, Color("8affd0"))
+
+
+func _draw_feed(lane: LaneMatch, top_right: Vector2) -> void:
+	var y := top_right.y
+	for e: Dictionary in lane.feed:
+		var age := (stage.tick - int(e["tick"])) / float(CombatRules.TICK_RATE)
+		if age > 8.0:
+			continue
+		var a := clampf(8.0 - age, 0.0, 1.0)
+		var text: String = e["text"]
+		var tw := _font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+		var tc := BLUE if e["team"] == 0 else RED
+		draw_rect(Rect2(top_right.x - tw - 18, y - 14, tw + 18, 20), Color(0.03, 0.04, 0.065, 0.75 * a))
+		draw_rect(Rect2(top_right.x - tw - 18, y - 14, 3, 20), Color(tc, a))
+		draw_string(_font, Vector2(top_right.x - tw - 8, y + 1), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.92, 0.9, 0.85, a))
+		y += 24.0
+
+
+func _draw_respawn(vp: Vector2) -> void:
+	var player: Fighter = stage.get("player")
+	if not player.is_ko() or player.respawn_timer <= 0:
+		return
+	var a := clampf(player.ko_ticks / 40.0, 0.0, 1.0)
+	draw_rect(Rect2(Vector2.ZERO, vp), Color(0.02, 0.02, 0.04, 0.45 * a))
+	var y := vp.y * 0.42
+	_title_center("SLAIN", Vector2(vp.x * 0.5, y), 44, Color(0.9, 0.86, 0.8, a))
+	_text_center("Respawning in %d" % ceili(player.respawn_timer / float(CombatRules.TICK_RATE)), Vector2(vp.x * 0.5, y + 36), 18, Color(0.85, 0.88, 0.93, a))
+
+
+func _draw_result(lane: LaneMatch, vp: Vector2) -> void:
+	if lane.winner < 0:
+		return
+	var player: Fighter = stage.get("player")
+	var t := (stage.tick - lane.end_tick) / float(CombatRules.TICK_RATE)
+	var a := clampf(t / 1.2, 0.0, 1.0)
+	draw_rect(Rect2(Vector2.ZERO, vp), Color(0.02, 0.02, 0.04, 0.55 * a))
+	var won := lane.winner == player.team
+	var y := vp.y * 0.4
+	_title_center("VICTORY" if won else "DEFEAT", Vector2(vp.x * 0.5, y), 64, Color(GOLD if won else Color("c9c3b8"), a))
+	draw_line(Vector2(vp.x * 0.5 - 180, y + 18), Vector2(vp.x * 0.5 + 180, y + 18), Color(GOLD, 0.7 * a), 1.5)
+	var stats := "Level %d  ·  %d / %d / %d  ·  %d minions  ·  %d gold" % [player.level, player.kills, player.deaths, player.assists, player.cs, player.gold]
+	_text_center(stats, Vector2(vp.x * 0.5, y + 48), 16, Color(0.85, 0.88, 0.93, a))
+	if t > 2.0:
+		_text_center("Press Enter for a new match", Vector2(vp.x * 0.5, y + 84), 15, Color(GOLD, a * (0.6 + 0.4 * sin(t * 3.0))))
+
+
+func _text_center(text: String, at: Vector2, size: int, col: Color) -> void:
+	var w := _font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+	draw_string_outline(_font, Vector2(at.x - w * 0.5, at.y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, 4, Color(0, 0, 0, 0.7 * col.a))
+	draw_string(_font, Vector2(at.x - w * 0.5, at.y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)
+
+
+func _title_center(text: String, at: Vector2, size: int, col: Color) -> void:
+	var w := _title_font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+	draw_string_outline(_title_font, Vector2(at.x - w * 0.5, at.y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, 6, Color(0, 0, 0, 0.6 * col.a))
+	draw_string(_title_font, Vector2(at.x - w * 0.5, at.y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)

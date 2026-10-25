@@ -1,1 +1,24 @@
-404: Not Found
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="58%" r="55%">
+      <stop offset="0" stop-color="#2f7e66" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#0b0f16" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="24" fill="#0b0f16"/>
+  <rect x="4" y="4" width="120" height="120" rx="24" fill="url(#glow)"/>
+  <rect x="4.5" y="4.5" width="119" height="119" rx="23.5" fill="none" stroke="#d8c38f" stroke-opacity="0.6"/>
+  <!-- cloak -->
+  <path d="M42 84 L86 84 L98 118 L30 118 Z" fill="#1b1f2e"/>
+  <path d="M30 118 L98 118" stroke="#4ea4ff" stroke-width="4"/>
+  <!-- scarf -->
+  <path d="M40 82 L88 82 L88 92 L40 92 Z" fill="#f0a43a"/>
+  <path d="M42 88 C30 92 22 98 12 96" fill="none" stroke="#f0a43a" stroke-width="7" stroke-linecap="round"/>
+  <!-- horns -->
+  <path d="M46 44 L52 44 L42 14 L38 18 Z" fill="#efe8dc"/>
+  <path d="M82 44 L76 44 L86 14 L90 18 Z" fill="#efe8dc"/>
+  <!-- mask -->
+  <ellipse cx="64" cy="60" rx="26" ry="27" fill="#efe8dc"/>
+  <ellipse cx="54" cy="63" rx="6" ry="10" fill="#0b0d14"/>
+  <ellipse cx="74" cy="63" rx="6" ry="10" fill="#0b0d14"/>
+</svg>

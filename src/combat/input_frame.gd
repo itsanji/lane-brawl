@@ -3,7 +3,7 @@ extends RefCounted
 ## One tick of input. Humans, bots, tests and (later) the network all produce these,
 ## and the simulation only ever reads these.
 
-const BUTTONS: Array[StringName] = [&"jump", &"light", &"heavy", &"s1", &"s2", &"ult", &"guard"]
+const BUTTONS: Array[StringName] = [&"jump", &"light", &"heavy", &"s1", &"s2", &"ult", &"dash", &"guard"]
 
 var x := 0  ## -1 left, 0, 1 right
 var y := 0  ## -1 up, 0, 1 down
@@ -13,6 +13,7 @@ var heavy := false
 var s1 := false
 var s2 := false
 var ult := false
+var dash := false
 var guard := false
 
 

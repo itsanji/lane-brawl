@@ -1,27 +1,40 @@
 @tool
 class_name RiftArt
 extends Node2D
-## Builds all of the map's visuals procedurally (no image assets) from RiftLayout:
-## per band a sky gradient, light shafts, far and mid parallax tree layers, fog, ground decor,
-## particles and a swaying foreground; plus rock, platforms, jump pads and the two base sanctuaries.
-## Art is split into ArtChunk nodes so off-screen pieces are culled. Runs in the editor too (@tool).
+## Builds all of the map's visuals procedurally (no image assets) from RiftLayout.
+## Lanes (open air, seasonal) and jungles (enclosed, bioluminescent) have different compositions.
+## Lane layers, back to front: sky → glow/moon → ridges (0.12) → light shafts → far trees (0.28) →
+## mid-far trees (0.45) → haze → mid trees (0.62) → haze → near-mid bushes (0.82) → fog wisps → fog →
+## [gameplay: rock, decor, lights, fighters] → foreground (1.2) → near-camera foreground (1.5).
+## Jungle layers: cave gradient → bioluminescent glows (0.1) → giant trunks (0.25) → trunks and roots
+## (0.45) → haze → ferns, vines, glowing mushrooms (0.65) → dark leaves (0.85) → light from the bridges
+## above → [gameplay] → foreground (1.2, 1.5).
+## Art is split into 800 px ArtChunks (culled off screen); seeded RNG keeps it deterministic. @tool so
+## the editor shows the map too.
 
-const Z_SKY := -60
-const Z_GLOW := -56
-const Z_FAR := -50
-const Z_SHAFT := -46
-const Z_MID := -40
-const Z_HAZE := -38
-const Z_WISPS := -37
-const Z_BIRDS := -48
-const Z_CRITTERS := -7
-const Z_FOG := -36
+const Z_SKY := -70
+const Z_GLOW := -66
+const Z_RIDGE := -62
+const Z_SHAFT := -58
+const Z_FAR := -54
+const Z_MIDFAR := -50
+const Z_HAZE1 := -48
+const Z_BIRDS := -47
+const Z_MID := -44
+const Z_MID_LIGHT := -43
+const Z_HAZE2 := -42
+const Z_NEARMID := -38
+const Z_WISPS := -36
+const Z_FOG := -34
 const Z_COLUMN := -30
+const Z_BEAMS := -28
 const Z_PARTICLES := -14
 const Z_ROCK := -10
 const Z_DECOR := -8
 const Z_LIGHT := -6
+const Z_CRITTERS := -5
 const Z_FRONT := 20
+const Z_FRONT2 := 22
 const CHUNK := 800.0
 const W := RiftLayout.WORLD_W
 const S := RiftLayout.Season
@@ -61,11 +74,13 @@ func _build() -> void:
 	_flicker.shader = FLICKER_SHADER
 	var g := RiftLayout.build()
 	for b in RiftLayout.FLOORS.size():
-		_build_band(b)
+		if RiftLayout.is_jungle(b):
+			_build_jungle(b)
+		else:
+			_build_lane(b)
 	_build_columns()
 	_build_rock(g["solids"])
 	_build_platforms(g["platforms"])
-	_build_pads(g["pads"])
 
 
 # ------------------------------------------------------------------ helpers
@@ -91,13 +106,21 @@ func _chunk(parent: Node2D, paint: Callable, mat: Material = null) -> void:
 	parent.add_child(c)
 
 
+## A parallax layer filled with chunks covering everything that can scroll into view.
+## `paint` is called as paint(ci, x0) for each 800 px chunk.
+func _parallax(factor: float, z: int, layer_name: String, paint: Callable, mat: Material = null) -> void:
+	var layer := _layer(factor, z, layer_name)
+	var r := ParallaxNode.content_range(factor)
+	for x0 in _chunks(r.x, r.y):
+		_chunk(layer, func(ci: CanvasItem) -> void: paint.call(ci, x0), mat)
+
+
 func _rng(a: int, b: int, c: float) -> RandomNumberGenerator:
 	var r := RandomNumberGenerator.new()
 	r.seed = hash([art_seed, a, b, int(c)])
 	return r
 
 
-## Chunk start positions covering [x0, x1).
 func _chunks(x0: float, x1: float) -> Array[float]:
 	var out: Array[float] = []
 	var x := floorf(x0 / CHUNK) * CHUNK
@@ -111,6 +134,14 @@ func _gy(b: int, x: float) -> float:
 	return RiftLayout.ground_y(b, x)
 
 
+func _near_anchor(b: int, x: float, margin: float) -> bool:
+	var r := RiftLayout.ground_x_range(b)
+	for a in RiftLayout.anchors(b):
+		if a != r.x and a != r.y and absf(x - a) < margin:
+			return true
+	return false
+
+
 func _near_torii(b: int, x: float, margin: float) -> bool:
 	if RiftLayout.BAND_SEASON[b] != S.WINTER:
 		return false
@@ -120,99 +151,19 @@ func _near_torii(b: int, x: float, margin: float) -> bool:
 	return false
 
 
-func _lane_x_range(b: int) -> Vector2:
-	return Vector2(RiftLayout.JUNGLE_X0, RiftLayout.JUNGLE_X1) if RiftLayout.is_jungle(b) else Vector2(RiftLayout.COL_W, W - RiftLayout.COL_W)
-
-
-func _near_connector_or_pad(b: int, x: float, margin: float) -> bool:
-	for i in [b - 1, b]:
-		if i >= 0 and RiftLayout.CONNECTORS.has(i):
-			for c: float in RiftLayout.CONNECTORS[i]:
-				if absf(x - c) < margin:
-					return true
-	return false
-
-
-# ------------------------------------------------------------------ bands
-
-func _build_band(b: int) -> void:
-	var p := SeasonPalette.for_band(b)
-	var season: RiftLayout.Season = RiftLayout.BAND_SEASON[b]
-	var top := RiftLayout.band_top(b)
-	var floor_y: float = RiftLayout.FLOORS[b]
-	var h := floor_y - top
-
-	var sky := _layer(1.0, Z_SKY, "Sky%d" % b)
-	_chunk(sky, func(ci: CanvasItem) -> void:
-		Painter.gradient_rect(ci, Rect2(-400, top - 2, W + 800, h + 24), p["sky_top"], p["sky_bottom"]))
-
-	var glow_layer := _layer(0.05, Z_GLOW, "Glow%d" % b)
-	var gr := ParallaxNode.content_range(0.05)
-	_chunk(glow_layer, func(ci: CanvasItem) -> void:
-		var r := _rng(b, 0, 0)
-		for k in 3:
-			var x := lerpf(gr.x + 300.0, gr.y - 300.0, (k + r.randf_range(0.2, 0.8)) / 3.0)
-			if season == S.WINTER:
-				if k == 1:  # the moon
-					var mc := Vector2(x, top + h * 0.3)
-					Painter.glow(ci, mc, h * 1.1, Color(p["moon"], 0.35))
-					Painter.glow(ci, mc, 70.0, Color(p["moon"], 0.5))
-					ci.draw_circle(mc, 34.0, Color(p["moon"], 0.85))
-				continue
-			Painter.glow(ci, Vector2(x, top + h * r.randf_range(0.2, 0.45)), h * r.randf_range(0.7, 1.0), Color(p["glow"], 0.32)), _add)
-
-	var shafts := _layer(0.15, Z_SHAFT, "Shafts%d" % b)
-	var sr := ParallaxNode.content_range(0.15)
-	for x0 in _chunks(sr.x, sr.y):
-		_chunk(shafts, func(ci: CanvasItem) -> void: _paint_shafts(ci, b, p, x0, top, floor_y), _add)
-
-	var far := _layer(0.3, Z_FAR, "Far%d" % b)
-	var fr := ParallaxNode.content_range(0.3)
-	for x0 in _chunks(fr.x, fr.y):
-		_chunk(far, func(ci: CanvasItem) -> void: _paint_far(ci, b, season, p, x0, top, floor_y))
-
-	var mid := _layer(0.6, Z_MID, "Mid%d" % b)
-	var mr := ParallaxNode.content_range(0.6)
-	for x0 in _chunks(mr.x, mr.y):
-		_chunk(mid, func(ci: CanvasItem) -> void: _paint_mid(ci, b, season, p, x0, top, floor_y), _sway_soft)
-
-	var haze := _layer(1.0, Z_HAZE, "Haze%d" % b)
-	var haze_alpha: float = {S.WINTER: 0.22, S.SPRING: 0.2, S.SUMMER: 0.14, S.FALL: 0.18}[season]
-	_chunk(haze, func(ci: CanvasItem) -> void:
-		Painter.gradient_rect(ci, Rect2(-400, top, W + 800, h), Color(p["fog"], haze_alpha * 0.6), Color(p["fog"], haze_alpha)))
-
+func _add_atmosphere(b: int, p: Dictionary, area: Rect2, season: RiftLayout.Season) -> void:
 	var wisps := FogWisps.new()
 	wisps.name = "Wisps%d" % b
 	wisps.z_index = Z_WISPS
 	add_child(wisps)
-	wisps.setup(Rect2(-400, top, W + 800, h), Color(p["fog"]), hash([art_seed, b, "wisps"]))
-
-	var fog := _layer(1.0, Z_FOG, "Fog%d" % b)
-	_chunk(fog, func(ci: CanvasItem) -> void:
-		Painter.fade_band(ci, -400, W + 400, floor_y + 4, -h * 0.32, Color(p["fog"], 0.42))
-		Painter.fade_band(ci, -400, W + 400, top, h * 0.18, Color(p["near"], 0.35)))
-
-	var decor := _layer(1.0, Z_DECOR, "Decor%d" % b)
-	var lights := _layer(1.0, Z_LIGHT, "Lights%d" % b)
-	var lr := _lane_x_range(b)
-	for x0 in _chunks(lr.x, lr.y):
-		_chunk(decor, func(ci: CanvasItem) -> void: _paint_decor(ci, b, season, p, maxf(x0, lr.x), minf(x0 + CHUNK, lr.y), floor_y))
-		_chunk(lights, func(ci: CanvasItem) -> void: _paint_lantern_glows(ci, b, p, maxf(x0, lr.x), minf(x0 + CHUNK, lr.y)), _flicker)
-
-	var front := _layer(1.2, Z_FRONT, "Front%d" % b)
-	var frr := ParallaxNode.content_range(1.2)
-	for x0 in _chunks(frr.x, frr.y):
-		_chunk(front, func(ci: CanvasItem) -> void: _paint_front(ci, b, season, p, x0, top, floor_y), _sway)
-
+	wisps.setup(Rect2(-400, area.position.y, W + 800, area.size.y), Color(p["fog"]), hash([art_seed, b, "wisps"]))
 	var particles := SeasonParticles.new()
 	particles.name = "Particles%d" % b
 	particles.z_index = Z_PARTICLES
 	add_child(particles)
-	particles.configure(season, p, Rect2(lr.x, top, lr.y - lr.x, h))
-
+	particles.configure(season, p, area)
 	var critters := Critters.new()
 	critters.name = "Critters%d" % b
-	var area := Rect2(lr.x, top, lr.y - lr.x, h)
 	match season:
 		S.SPRING:
 			critters.z_index = Z_CRITTERS
@@ -225,6 +176,74 @@ func _build_band(b: int) -> void:
 			critters.z_index = Z_BIRDS
 			critters.setup(Critters.Kind.BIRD, area, [Color(p["near"]).lerp(Color(p["far"]), 0.3)] as Array[Color], hash([art_seed, b, "c"]))
 	add_child(critters)
+
+
+# ------------------------------------------------------------------ lanes (open air, seasonal)
+
+func _build_lane(b: int) -> void:
+	var p := SeasonPalette.for_band(b)
+	var season: RiftLayout.Season = RiftLayout.BAND_SEASON[b]
+	var top := RiftLayout.band_top(b)
+	var floor_y: float = RiftLayout.FLOORS[b]
+	var h := floor_y - top
+	var lr := RiftLayout.ground_x_range(b)
+
+	_chunk(_layer(1.0, Z_SKY, "Sky%d" % b), func(ci: CanvasItem) -> void:
+		Painter.gradient_rect(ci, Rect2(-400, top - 2, W + 800, h + 24), p["sky_top"], p["sky_bottom"]))
+	var gr := ParallaxNode.content_range(0.05)
+	_chunk(_layer(0.05, Z_GLOW, "Glow%d" % b), func(ci: CanvasItem) -> void:
+		var r := _rng(b, 0, 0)
+		for k in 3:
+			var x := lerpf(gr.x + 300.0, gr.y - 300.0, (k + r.randf_range(0.2, 0.8)) / 3.0)
+			if season == S.WINTER:
+				if k == 1:  # the moon
+					var mc := Vector2(x, top + h * 0.28)
+					Painter.glow(ci, mc, h * 1.1, Color(p["moon"], 0.35))
+					Painter.glow(ci, mc, 70.0, Color(p["moon"], 0.5))
+					ci.draw_circle(mc, 34.0, Color(p["moon"], 0.85))
+				continue
+			Painter.glow(ci, Vector2(x, top + h * r.randf_range(0.2, 0.45)), h * r.randf_range(0.7, 1.0), Color(p["glow"], 0.32)), _add)
+	_parallax(0.12, Z_RIDGE, "Ridges%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_ridges(ci, b, season, p, x0, top, floor_y))
+	_parallax(0.15, Z_SHAFT, "Shafts%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_shafts(ci, b, p, x0, top, floor_y), _add)
+	_parallax(0.28, Z_FAR, "Far%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_trees(ci, b, season, p, x0, top, floor_y, 0))
+	_parallax(0.45, Z_MIDFAR, "MidFar%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_trees(ci, b, season, p, x0, top, floor_y, 1))
+	var haze1: float = {S.WINTER: 0.16, S.SPRING: 0.14, S.FALL: 0.13}.get(season, 0.12)
+	var haze2: float = {S.WINTER: 0.18, S.SPRING: 0.16, S.FALL: 0.15}.get(season, 0.12)
+	_haze(b, p, top, h, Z_HAZE1, haze1)
+	_parallax(0.62, Z_MID, "Mid%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_trees(ci, b, season, p, x0, top, floor_y, 2), _sway_soft)
+	_haze(b, p, top, h, Z_HAZE2, haze2)
+	_parallax(0.82, Z_NEARMID, "NearMid%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_nearmid(ci, b, season, p, x0, top, floor_y), _sway_soft)
+	_chunk(_layer(1.0, Z_FOG, "Fog%d" % b), func(ci: CanvasItem) -> void:
+		Painter.fade_band(ci, -400, W + 400, floor_y + 4, -h * 0.3, Color(p["fog"], 0.4))
+		Painter.fade_band(ci, -400, W + 400, top, h * 0.16, Color(p["near"], 0.35)))
+	var decor := _layer(1.0, Z_DECOR, "Decor%d" % b)
+	var lights := _layer(1.0, Z_LIGHT, "Lights%d" % b)
+	for x0 in _chunks(lr.x, lr.y):
+		var a := maxf(x0, lr.x)
+		var z := minf(x0 + CHUNK, lr.y)
+		_chunk(decor, func(ci: CanvasItem) -> void: _paint_lane_decor(ci, b, season, p, a, z))
+		_chunk(lights, func(ci: CanvasItem) -> void: _paint_lane_lights(ci, b, p, a, z), _flicker)
+	_parallax(1.2, Z_FRONT, "Front%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_front(ci, b, season, p, x0, top, floor_y), _sway)
+	_parallax(1.5, Z_FRONT2, "Front2_%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_front2(ci, b, season, p, x0, top, floor_y), _sway)
+	_add_atmosphere(b, p, Rect2(lr.x, top, lr.y - lr.x, h), season)
+
+
+func _haze(b: int, p: Dictionary, top: float, h: float, z: int, alpha: float) -> void:
+	_chunk(_layer(1.0, z, "Haze%d_%d" % [b, -z]), func(ci: CanvasItem) -> void:
+		Painter.gradient_rect(ci, Rect2(-400, top, W + 800, h), Color(p["fog"], alpha * 0.6), Color(p["fog"], alpha)))
+
+
+func _paint_ridges(ci: CanvasItem, b: int, season: RiftLayout.Season, p: Dictionary, x0: float, top: float, floor_y: float) -> void:
+	var r := _rng(b, 7, x0)
+	var h := floor_y - top
+	var far: Color = p["far"]
+	var sky_bottom: Color = p["sky_bottom"]
+	if season == S.WINTER:
+		Painter.peak(ci, Vector2(x0 + r.randf_range(100, CHUNK - 100), floor_y), h * r.randf_range(0.55, 0.8), r.randf_range(560, 800), far.lerp(sky_bottom, 0.55), Color(p["accent2"], 0.75))
+	Painter.ridge(ci, x0 - 40, x0 + CHUNK + 40, floor_y, h * 0.5, sky_bottom.lerp(far, 0.3), r, 50.0)
+	Painter.ridge(ci, x0 - 40, x0 + CHUNK + 40, floor_y, h * 0.33, far.lerp(sky_bottom, 0.35), r, 40.0)
+	if season == S.WINTER and r.randf() < 0.5:
+		Painter.pagoda(ci, Vector2(x0 + r.randf_range(80, CHUNK - 80), floor_y - h * 0.2), h * r.randf_range(0.36, 0.46), far.lerp(sky_bottom, 0.2), Color(p["accent2"], 0.65))
 
 
 func _paint_shafts(ci: CanvasItem, b: int, p: Dictionary, x0: float, top: float, floor_y: float) -> void:
@@ -242,106 +261,104 @@ func _paint_shafts(ci: CanvasItem, b: int, p: Dictionary, x0: float, top: float,
 			PackedColorArray([a, a, Color(a, 0.0), Color(a, 0.0)]))
 
 
-func _tree(ci: CanvasItem, season: RiftLayout.Season, base: Vector2, th: float, body: Color, leaves: Array,
-		accent: Color, accent_count: int, snow: Color, r: RandomNumberGenerator) -> void:
-	match season:
-		S.WINTER:
-			Painter.matsu(ci, base, th, body.darkened(0.15), leaves[r.randi() % leaves.size()], snow, r)
-		S.SUMMER:
-			Painter.jungle_tree(ci, base, th, body, leaves, body, r)
-		_:
-			Painter.round_tree(ci, base, th, th * r.randf_range(0.28, 0.36), body, leaves, accent, accent_count, r)
-
-
-func _paint_far(ci: CanvasItem, b: int, season: RiftLayout.Season, p: Dictionary, x0: float, top: float, floor_y: float) -> void:
-	var r := _rng(b, 2, x0)
+## depth 0 = far, 1 = mid-far, 2 = mid.
+func _paint_trees(ci: CanvasItem, b: int, season: RiftLayout.Season, p: Dictionary, x0: float, top: float, floor_y: float, depth: int) -> void:
+	var r := _rng(b, 2 + depth, x0)
 	var h := floor_y - top
 	var far: Color = p["far"]
+	var mid: Color = p["mid"]
 	var sky_bottom: Color = p["sky_bottom"]
-	if season == S.WINTER:
-		Painter.peak(ci, Vector2(x0 + r.randf_range(100, CHUNK - 100), floor_y), h * r.randf_range(0.6, 0.85), r.randf_range(520, 760), far.lerp(sky_bottom, 0.5), Color(p["accent2"], 0.8))
-	if not RiftLayout.is_jungle(b):
-		Painter.ridge(ci, x0 - 40, x0 + CHUNK + 40, floor_y, h * 0.42, far.lerp(sky_bottom, 0.45), r, 40.0)
-	if season == S.WINTER and r.randf() < 0.55:
-		Painter.pagoda(ci, Vector2(x0 + r.randf_range(80, CHUNK - 80), floor_y - h * 0.18), h * r.randf_range(0.42, 0.55), far.darkened(0.12), Color(p["accent2"], 0.7))
-	var x := x0
+	var winter := season == S.WINTER
+	var heights: Vector2 = [Vector2(0.3, 0.55), Vector2(0.42, 0.72), Vector2(0.58, 0.92)][depth]
+	var spacing: Vector2 = [Vector2(110, 180) if winter else Vector2(45, 95), Vector2(160, 260) if winter else Vector2(80, 150), Vector2(210, 340) if winter else Vector2(120, 220)][depth]
+	var x := x0 + r.randf_range(0, spacing.x)
 	while x < x0 + CHUNK:
-		var th := h * r.randf_range(0.32, 0.62)
-		var col := far.lerp(sky_bottom, r.randf_range(0.0, 0.3))
-		_tree(ci, season, Vector2(x, floor_y + 6), th, col, [col.darkened(0.04), col, col.lightened(0.05)],
-			col.lightened(0.18), 6 if season == S.SPRING else 0, Color(p["accent"], 0.55), r)
-		x += r.randf_range(110, 180) if season == S.WINTER else r.randf_range(45, 95)
-	if RiftLayout.is_jungle(b):
-		x = x0
-		while x < x0 + CHUNK:
-			Painter.hanging_vine(ci, Vector2(x, top - 4), r.randf_range(30, h * 0.45), far.darkened(0.1), r)
-			x += r.randf_range(25, 60)
-
-
-func _paint_mid(ci: CanvasItem, b: int, season: RiftLayout.Season, p: Dictionary, x0: float, top: float, floor_y: float) -> void:
-	var r := _rng(b, 3, x0)
-	var h := floor_y - top
-	var body: Color = p["mid"]
-	var leaves: Array = []
-	for c: Color in p["foliage"]:
-		leaves.append(c if season == S.WINTER else c.lerp(body, 0.45 if season == S.FALL else 0.55))
-	var accent: Color = p["accent"]
-	var x := x0 + r.randf_range(0, 80)
-	while x < x0 + CHUNK:
-		var th := h * r.randf_range(0.55, 0.92)
+		var th := h * r.randf_range(heights.x, heights.y)
+		var body: Color
+		var leaves: Array = []
+		var accent: Color
 		var count := 0
-		match season:
-			S.SPRING: count = 26
-			S.FALL: count = 14
-		_tree(ci, season, Vector2(x, floor_y + 10), th, body, leaves, accent.lerp(Color(p["fog"]), 0.3), count, Color(p["accent"], 0.92), r)
-		x += r.randf_range(210, 340) if season == S.WINTER else r.randf_range(110, 210)
-	if RiftLayout.is_jungle(b):
-		x = x0
-		while x < x0 + CHUNK:
-			Painter.hanging_vine(ci, Vector2(x, top - 4), r.randf_range(40, h * 0.6), body.darkened(0.15), r)
-			x += r.randf_range(35, 80)
-	elif season == S.FALL:
+		if depth == 2:
+			body = mid
+			for c: Color in p["foliage"]:
+				leaves.append(c if winter else c.lerp(mid, 0.45 if season == S.FALL else 0.55))
+			accent = Color(p["accent"]).lerp(Color(p["fog"]), 0.3)
+			count = 26 if season == S.SPRING else (14 if season == S.FALL else 0)
+		else:
+			var t := 0.0 if depth == 0 else 0.5
+			body = far.lerp(sky_bottom, r.randf_range(0.0, 0.3)).lerp(mid, t)
+			leaves = [body.darkened(0.04), body, body.lightened(0.05)]
+			if winter:
+				leaves = [body.lerp(Color(p["foliage"][0]), 0.4)]
+			accent = body.lightened(0.18)
+			if season == S.SPRING:
+				count = 6 if depth == 0 else 12
+			elif season == S.FALL and depth == 1:
+				count = 4
+		var snow := Color(p["accent"], 0.55 + 0.18 * depth)
+		var base := Vector2(x, floor_y + 8)
+		if winter:
+			Painter.matsu(ci, base, th, body.darkened(0.15), leaves[r.randi() % leaves.size()], snow, r)
+		else:
+			Painter.round_tree(ci, base, th, th * r.randf_range(0.28, 0.36), body, leaves, accent, count, r)
+		x += r.randf_range(spacing.x, spacing.y)
+	if depth == 2 and season == S.FALL:
 		for k in 10:  # leaves lying in the mid distance
-			Painter.blob(ci, Vector2(x0 + r.randf_range(0, CHUNK), floor_y + 2), Vector2(r.randf_range(14, 30), 6), leaves[r.randi() % leaves.size()], r, 10, 0.2)
+			Painter.blob(ci, Vector2(x0 + r.randf_range(0, CHUNK), floor_y + 2), Vector2(r.randf_range(14, 30), 6), Color(p["foliage"][k % 3]).lerp(mid, 0.4), r, 10, 0.2)
 
 
-func _paint_decor(ci: CanvasItem, b: int, season: RiftLayout.Season, p: Dictionary, x0: float, x1: float, _floor_y: float) -> void:
+## Dark bushes and partial trunks just behind the action, for depth.
+func _paint_nearmid(ci: CanvasItem, b: int, season: RiftLayout.Season, p: Dictionary, x0: float, top: float, floor_y: float) -> void:
+	var r := _rng(b, 8, x0)
+	var h := floor_y - top
+	var dark := Color(p["near"]).lerp(Color(p["mid"]), 0.45)
+	var x := x0 + r.randf_range(0, 200)
+	while x < x0 + CHUNK:
+		if r.randf() < 0.45:
+			Painter.trunk(ci, Vector2(x, floor_y + 20), h * r.randf_range(0.7, 1.05), r.randf_range(22, 40), r.randf_range(-30, 30), dark)
+		for k in r.randi_range(2, 4):
+			var bp := Vector2(x + r.randf_range(-60, 60), floor_y + r.randf_range(-4, 16))
+			Painter.blob(ci, bp, Vector2(r.randf_range(40, 80), r.randf_range(26, 48)), dark, r, 14, 0.2)
+			match season:
+				S.WINTER:
+					Painter.blob(ci, bp + Vector2(0, -r.randf_range(20, 30)), Vector2(r.randf_range(30, 50), 9), Color(p["accent"], 0.5), r, 12, 0.15)
+				S.SPRING:
+					for i in 5:
+						ci.draw_circle(bp + Vector2(r.randf_range(-50, 50), r.randf_range(-36, 6)), 3.0, Color(p["accent"]).darkened(0.45))
+				S.FALL:
+					for i in 4:
+						ci.draw_circle(bp + Vector2(r.randf_range(-50, 50), r.randf_range(-36, 6)), 3.5, Color(p["foliage"][i % 3]).darkened(0.4))
+		x += r.randf_range(170, 320)
+
+
+func _paint_lane_decor(ci: CanvasItem, b: int, season: RiftLayout.Season, p: Dictionary, x0: float, x1: float) -> void:
 	var r := _rng(b, 4, x0)
 	var near: Color = p["near"]
 	var cap: Color = p["cap"]
 	var cap2: Color = p["cap2"]
 	var accent: Color = p["accent"]
-	# Bushes and rocks sitting on the ground, slightly lifted from the darkness.
 	var x := x0 + r.randf_range(20, 120)
 	while x < x1:
-		if not _near_connector_or_pad(b, x, 110.0) and not _near_torii(b, x, 150.0):
+		if not _near_anchor(b, x, 120.0) and not _near_torii(b, x, 150.0):
 			var gy := _gy(b, x)
-			var bush := near.lerp(p["mid"], 0.35)
-			match season:
-				S.WINTER:
-					if r.randf() < 0.55:
-						Painter.camellia(ci, Vector2(x, gy + 4), r.randf_range(20, 30), Color("1b2a33"), Color(p["camellia"]), cap, r)
-					else:
-						Painter.blob(ci, Vector2(x, gy - 8), Vector2(r.randf_range(30, 46), 11), cap2, r, 14, 0.12)
-						Painter.blob(ci, Vector2(x + 6, gy - 12), Vector2(r.randf_range(20, 30), 8), cap, r, 14, 0.1)
-				_:
-					for k in r.randi_range(2, 4):
-						var bx := x + r.randf_range(-30, 30)
-						Painter.blob(ci, Vector2(bx, _gy(b, bx) - r.randf_range(4, 14)), Vector2(r.randf_range(18, 34), r.randf_range(12, 22)), bush, r, 12, 0.18)
-			match season:
-				S.SPRING:
-					for k in 5:
-						ci.draw_circle(Vector2(x + r.randf_range(-34, 34), gy - r.randf_range(10, 26)), r.randf_range(2, 3.5), accent)
-				S.FALL:
-					for k in 6:
-						ci.draw_circle(Vector2(x + r.randf_range(-34, 34), gy - r.randf_range(8, 24)), r.randf_range(2.5, 4), [cap, cap2, accent][k % 3])
-				S.SUMMER:
-					ci.draw_circle(Vector2(x + 18, gy - 9), 4.0, Color(p["accent"], 0.9))
+			if season == S.WINTER:
+				if r.randf() < 0.55:
+					Painter.camellia(ci, Vector2(x, gy + 4), r.randf_range(20, 30), Color("1b2a33"), Color(p["camellia"]), cap, r)
+				else:
+					Painter.blob(ci, Vector2(x, gy - 8), Vector2(r.randf_range(30, 46), 11), cap2, r, 14, 0.12)
+					Painter.blob(ci, Vector2(x + 6, gy - 12), Vector2(r.randf_range(20, 30), 8), cap, r, 14, 0.1)
+			else:
+				var bush := near.lerp(p["mid"], 0.35)
+				for k in r.randi_range(2, 4):
+					var bx := x + r.randf_range(-30, 30)
+					Painter.blob(ci, Vector2(bx, _gy(b, bx) - r.randf_range(4, 14)), Vector2(r.randf_range(18, 34), r.randf_range(12, 22)), bush, r, 12, 0.18)
+				for k in 5:
+					var col: Color = accent if season == S.SPRING else [cap, cap2, accent][k % 3]
+					ci.draw_circle(Vector2(x + r.randf_range(-34, 34), gy - r.randf_range(8, 26)), r.randf_range(2, 3.8), col)
 		x += r.randf_range(140, 320)
-	# Grass, ferns and small seasonal details all along the ground.
 	x = x0
 	while x < x1:
-		if not _near_connector_or_pad(b, x, 80.0):
+		if not _near_anchor(b, x, 80.0):
 			var gy := _gy(b, x)
 			match season:
 				S.WINTER:
@@ -353,15 +370,12 @@ func _paint_decor(ci: CanvasItem, b: int, season: RiftLayout.Season, p: Dictiona
 						var stem := Vector2(x + 3, gy)
 						ci.draw_line(stem, stem + Vector2(1, -14), cap.darkened(0.3), 1.5)
 						ci.draw_circle(stem + Vector2(1, -15), 2.6, [accent, Color("fff6e0"), p["accent2"]][r.randi() % 3])
-				S.SUMMER:
-					Painter.tuft(ci, Vector2(x, gy + 1), r.randf_range(14, 28), cap.darkened(0.2), r, 6)
 				S.FALL:
 					Painter.tuft(ci, Vector2(x, gy + 1), r.randf_range(8, 14), Color("6b4a2a"), r, 3)
 					Painter.blob(ci, Vector2(x + 8, gy - 2), Vector2(r.randf_range(6, 12), 3.5), [cap, cap2, Color(accent, 1)][r.randi() % 3], r, 8, 0.25)
 		x += r.randf_range(14, 34)
 	if season == S.WINTER:
 		_paint_shrine(ci, b, p, x0, x1, r)
-	# Lanterns (their light is drawn by _paint_lantern_glows).
 	for lx in _lantern_positions(b, x0, x1):
 		if season == S.WINTER:
 			Painter.toro(ci, Vector2(lx, _gy(b, lx)), 70.0, Color("39435a"), Color(p["lamp"]), cap)
@@ -382,7 +396,7 @@ func _paint_shrine(ci: CanvasItem, b: int, p: Dictionary, x0: float, x1: float, 
 		for side: float in [-1.0, 1.0]:
 			Painter.chochin(ci, Vector2(tx + side * h * 0.22, beam_y), 18.0, Color(p["lamp"]).lerp(Color("ffffff"), 0.15), Color("1a1420"))
 	var fx := x0 + r.randf_range(100, 500)
-	if fx + 120.0 < x1 and not _near_connector_or_pad(b, fx, 160.0) and not _near_torii(b, fx + 60.0, 220.0):
+	if fx + 120.0 < x1 and not _near_anchor(b, fx + 60.0, 220.0) and not _near_torii(b, fx + 60.0, 220.0):
 		Painter.bamboo_fence(ci, fx, fx + 112.0, func(x: float) -> float: return _gy(b, x) + 2.0, 34.0, Color("4a5a3a"), cap)
 
 
@@ -391,13 +405,13 @@ func _lantern_positions(b: int, x0: float, x1: float) -> Array[float]:
 	var r := _rng(b, 5, x0)
 	var x := x0 + r.randf_range(200, 600)
 	while x < x1 - 40:
-		if not _near_connector_or_pad(b, x, 140.0) and absf(x - 3200.0) > 160.0 and not _near_torii(b, x, 200.0):
+		if not _near_anchor(b, x, 200.0) and not _near_torii(b, x, 200.0):
 			out.append(x)
 		x += r.randf_range(600, 900)
 	return out
 
 
-func _paint_lantern_glows(ci: CanvasItem, b: int, p: Dictionary, x0: float, x1: float) -> void:
+func _paint_lane_lights(ci: CanvasItem, b: int, p: Dictionary, x0: float, x1: float) -> void:
 	var winter := RiftLayout.BAND_SEASON[b] == S.WINTER
 	for lx in _lantern_positions(b, x0, x1):
 		var gy := _gy(b, lx)
@@ -446,10 +460,190 @@ func _paint_front(ci: CanvasItem, b: int, season: RiftLayout.Season, p: Dictiona
 				Painter.branch(ci, t.lerp(tip, 0.6), t.lerp(tip, 0.6) + Vector2(30, 40), 3.0, near)
 				for i in 7:
 					Painter.blob(ci, t.lerp(tip, r.randf()) + Vector2(r.randf_range(-12, 12), r.randf_range(-6, 12)), Vector2(7, 4), (p["foliage"] as Array)[i % 3], r, 8, 0.2)
-	if r.randf() < 0.7:  # tall grass silhouettes in front of the floor edge
+	if r.randf() < 0.7:
 		var gx := x0 + r.randf_range(0, CHUNK)
 		for i in r.randi_range(4, 9):
-			Painter.tuft(ci, Vector2(gx + i * 9, maxf(_gy(b, gx), floor_y - 40.0) + 34), r.randf_range(40, 70), near, r, 3)
+			Painter.tuft(ci, Vector2(gx + i * 9, floor_y + 40), r.randf_range(40, 70), near, r, 3)
+
+
+## Very close to the camera: big, dark, sparse silhouettes framing the screen edges.
+func _paint_front2(ci: CanvasItem, b: int, season: RiftLayout.Season, p: Dictionary, x0: float, top: float, floor_y: float) -> void:
+	var r := _rng(b, 9, x0)
+	var dark := Color(p["near"]).darkened(0.4)
+	if r.randf() < 0.55:  # foliage mound rising from the bottom edge
+		var x := x0 + r.randf_range(0, CHUNK)
+		for k in 4:
+			Painter.blob(ci, Vector2(x + (k - 1.5) * 60.0, floor_y + 90 - r.randf_range(0, 40)), Vector2(r.randf_range(60, 100), r.randf_range(50, 80)), dark, r, 14, 0.22)
+		for i in 7:
+			Painter.tuft(ci, Vector2(x + r.randf_range(-120, 120), floor_y + 40), r.randf_range(60, 110), dark, r, 3)
+		if season == S.WINTER:
+			Painter.blob(ci, Vector2(x, floor_y + 20), Vector2(140, 16), Color(p["accent"], 0.35), r, 14, 0.2)
+	if r.randf() < 0.45:  # bough hanging into the top edge
+		var t := Vector2(x0 + r.randf_range(0, CHUNK), top - 20)
+		var tip := t + Vector2(r.randf_range(-260, 260), r.randf_range(90, 150))
+		Painter.branch(ci, t, tip, 12.0, dark)
+		for i in 8:
+			var at := t.lerp(tip, r.randf_range(0.3, 1.0)) + Vector2(r.randf_range(-30, 30), r.randf_range(-20, 20))
+			if season == S.WINTER:
+				Painter.blob(ci, at, Vector2(36, 12), dark, r, 12, 0.15)
+				Painter.blob(ci, at + Vector2(0, -8), Vector2(30, 6), Color(p["accent"], 0.4), r, 10, 0.1)
+			else:
+				Painter.blob(ci, at, Vector2(r.randf_range(18, 32), r.randf_range(12, 20)), dark, r, 12, 0.2)
+
+
+# ------------------------------------------------------------------ jungles (enclosed, bioluminescent)
+
+func _build_jungle(b: int) -> void:
+	var p := SeasonPalette.for_band(b)
+	var top := RiftLayout.band_top(b)
+	var floor_y: float = RiftLayout.FLOORS[b]
+	var h := floor_y - top
+	var jr := RiftLayout.ground_x_range(b)
+
+	_chunk(_layer(1.0, Z_SKY, "Cave%d" % b), func(ci: CanvasItem) -> void:
+		Painter.gradient_rect(ci, Rect2(-400, top - 2, W + 800, h + 24), p["sky_top"], p["sky_bottom"]))
+	_parallax(0.1, Z_GLOW, "Bio%d" % b, func(ci: CanvasItem, x0: float) -> void:
+		var r := _rng(b, 20, x0)
+		for k in 3:
+			var c := Vector2(x0 + r.randf_range(0, CHUNK), top + h * r.randf_range(0.2, 0.85))
+			Painter.glow(ci, c, r.randf_range(200, 380), Color(p["bio"] if k % 2 == 0 else p["bio2"], 0.16)), _add)
+	_parallax(0.25, Z_FAR, "Trunks%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_jungle_trunks(ci, b, p, x0, top, floor_y, 0))
+	_parallax(0.45, Z_MIDFAR, "Roots%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_jungle_trunks(ci, b, p, x0, top, floor_y, 1))
+	_haze(b, p, top, h, Z_HAZE1, 0.12)
+	_parallax(0.65, Z_MID, "Undergrowth%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_jungle_mid(ci, b, p, x0, top, floor_y), _sway_soft)
+	_parallax(0.65, Z_MID_LIGHT, "Mushglow%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_jungle_mid_glows(ci, b, p, x0, floor_y), _flicker)
+	_haze(b, p, top, h, Z_HAZE2, 0.1)
+	_parallax(0.85, Z_NEARMID, "Leaves%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_jungle_nearmid(ci, b, p, x0, top, floor_y), _sway_soft)
+	_chunk(_layer(1.0, Z_BEAMS, "Beams%d" % b), func(ci: CanvasItem) -> void:
+		# light falling through the bridge openings in the ceiling
+		var shaft: Color = p["shaft"]
+		for x: float in RiftLayout.BRIDGES.get(b - 1, []):
+			var a := Color(shaft, shaft.a * 1.6)
+			ci.draw_polygon(PackedVector2Array([Vector2(x - 60, top - 4), Vector2(x + 60, top - 4), Vector2(x + 210, floor_y), Vector2(x - 210, floor_y)]),
+				PackedColorArray([a, a, Color(a, 0.0), Color(a, 0.0)]))
+			Painter.glow(ci, Vector2(x, top + 10), 120.0, Color(p["glow"], 0.25)), _add)
+	_chunk(_layer(1.0, Z_FOG, "Fog%d" % b), func(ci: CanvasItem) -> void:
+		Painter.fade_band(ci, -400, W + 400, floor_y + 4, -h * 0.25, Color(p["fog"], 0.35))
+		Painter.fade_band(ci, -400, W + 400, top, h * 0.12, Color(p["near"], 0.5)))
+	var decor := _layer(1.0, Z_DECOR, "Decor%d" % b)
+	var lights := _layer(1.0, Z_LIGHT, "Lights%d" % b)
+	for x0 in _chunks(jr.x, jr.y):
+		var a := maxf(x0, jr.x)
+		var z := minf(x0 + CHUNK, jr.y)
+		_chunk(decor, func(ci: CanvasItem) -> void: _paint_jungle_decor(ci, b, p, a, z))
+		_chunk(lights, func(ci: CanvasItem) -> void: _paint_jungle_floor_lights(ci, b, p, a, z), _flicker)
+	_parallax(1.2, Z_FRONT, "Front%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_front(ci, b, S.SUMMER, p, x0, top, floor_y), _sway)
+	_parallax(1.5, Z_FRONT2, "Front2_%d" % b, func(ci: CanvasItem, x0: float) -> void: _paint_jungle_front2(ci, b, p, x0, top, floor_y), _sway)
+	_add_atmosphere(b, p, Rect2(jr.x, top, jr.y - jr.x, h), S.SUMMER)
+
+
+func _paint_jungle_trunks(ci: CanvasItem, b: int, p: Dictionary, x0: float, top: float, floor_y: float, depth: int) -> void:
+	var r := _rng(b, 21 + depth, x0)
+	var h := floor_y - top
+	var col: Color = Color(p["far"]) if depth == 0 else Color(p["far"]).lerp(Color(p["mid"]), 0.6)
+	var x := x0 + r.randf_range(0, 120)
+	while x < x0 + CHUNK:
+		var w := r.randf_range(50, 110) if depth == 0 else r.randf_range(28, 60)
+		Painter.giant_trunk(ci, x, top, floor_y + 10, w, col, r)
+		if depth == 1:
+			for k in r.randi_range(2, 4):
+				var at := Vector2(x, lerpf(top, floor_y, r.randf_range(0.15, 0.7)))
+				var ang := r.randf_range(-PI * 0.9, -PI * 0.1) + (PI if r.randf() < 0.5 else 0.0)
+				Painter.big_leaf(ci, at, r.randf_range(60, 110), ang, col.lerp(Color(p["foliage"][0]), 0.35))
+		x += r.randf_range(170, 320) if depth == 0 else r.randf_range(210, 380)
+	Painter.root_curtain(ci, x0, x0 + CHUNK, top - 6, h * (0.35 if depth == 0 else 0.5), col.darkened(0.15), r)
+	for k in 6:  # canopy masses against the ceiling
+		Painter.blob(ci, Vector2(x0 + r.randf_range(0, CHUNK), top + r.randf_range(0, 40)), Vector2(r.randf_range(80, 160), r.randf_range(30, 60)), col.darkened(0.2), r, 14, 0.2)
+
+
+func _mushrooms(b: int, x0: float, salt: int) -> Array[Vector3]:
+	var out: Array[Vector3] = []  ## x, size, colour index
+	var r := _rng(b, salt, x0)
+	var x := x0 + r.randf_range(0, 160)
+	while x < x0 + CHUNK:
+		out.append(Vector3(x, r.randf_range(26, 60), r.randi() % 2))
+		x += r.randf_range(140, 320)
+	return out
+
+
+func _paint_jungle_mid(ci: CanvasItem, b: int, p: Dictionary, x0: float, top: float, floor_y: float) -> void:
+	var r := _rng(b, 23, x0)
+	var h := floor_y - top
+	var mid: Color = p["mid"]
+	var leaf := mid.lerp(Color(p["foliage"][1]), 0.4)
+	var x := x0
+	while x < x0 + CHUNK:
+		Painter.fern(ci, Vector2(x, floor_y + 6), r.randf_range(40, 90), leaf, r)
+		if r.randf() < 0.5:
+			Painter.big_leaf(ci, Vector2(x, floor_y + 10), r.randf_range(70, 130), r.randf_range(-PI * 0.85, -PI * 0.15), leaf.darkened(0.15))
+		x += r.randf_range(50, 120)
+	x = x0
+	while x < x0 + CHUNK:
+		Painter.hanging_vine(ci, Vector2(x, top - 4), r.randf_range(60, h * 0.55), mid.darkened(0.1), r)
+		x += r.randf_range(30, 70)
+	for m in _mushrooms(b, x0, 24):
+		Painter.glow_mushroom(ci, Vector2(m.x, floor_y + 4), m.y, mid.lightened(0.15), Color(p["bio"] if m.z < 0.5 else p["bio2"]).darkened(0.25))
+
+
+func _paint_jungle_mid_glows(ci: CanvasItem, b: int, p: Dictionary, x0: float, floor_y: float) -> void:
+	for m in _mushrooms(b, x0, 24):
+		Painter.glow(ci, Vector2(m.x, floor_y - m.y * 0.8), m.y * 2.4, Color(p["bio"] if m.z < 0.5 else p["bio2"], 0.45))
+
+
+func _paint_jungle_nearmid(ci: CanvasItem, b: int, p: Dictionary, x0: float, top: float, floor_y: float) -> void:
+	var r := _rng(b, 25, x0)
+	var dark := Color(p["near"]).lerp(Color(p["mid"]), 0.5)
+	var x := x0 + r.randf_range(0, 150)
+	while x < x0 + CHUNK:
+		for k in 3:
+			Painter.big_leaf(ci, Vector2(x + r.randf_range(-20, 20), floor_y + 30), r.randf_range(90, 150), r.randf_range(-PI * 0.8, -PI * 0.2), dark)
+		x += r.randf_range(160, 300)
+	Painter.root_curtain(ci, x0, x0 + CHUNK, top - 6, (floor_y - top) * 0.3, dark, r)
+
+
+func _paint_jungle_decor(ci: CanvasItem, b: int, p: Dictionary, x0: float, x1: float) -> void:
+	var r := _rng(b, 26, x0)
+	var cap: Color = p["cap"]
+	var x := x0
+	while x < x1:
+		if not _near_anchor(b, x, 90.0):
+			var gy := _gy(b, x)
+			Painter.tuft(ci, Vector2(x, gy + 1), r.randf_range(14, 28), cap.darkened(0.2), r, 6)
+			if r.randf() < 0.12:
+				Painter.fern(ci, Vector2(x, gy + 2), r.randf_range(26, 44), cap.darkened(0.1), r)
+		x += r.randf_range(14, 30)
+	for m in _floor_shrooms(b, x0, x1):
+		Painter.glow_mushroom(ci, Vector2(m.x, _gy(b, m.x) + 2), m.y, Color("cfe8dc").darkened(0.4), Color(p["bio"] if m.z < 0.5 else p["bio2"]))
+
+
+func _floor_shrooms(b: int, x0: float, x1: float) -> Array[Vector3]:
+	var out: Array[Vector3] = []
+	var r := _rng(b, 27, x0)
+	var x := x0 + r.randf_range(60, 300)
+	while x < x1:
+		if not _near_anchor(b, x, 140.0):
+			for k in r.randi_range(1, 3):
+				out.append(Vector3(x + k * r.randf_range(12, 20), r.randf_range(12, 26), r.randi() % 2))
+		x += r.randf_range(260, 520)
+	return out
+
+
+func _paint_jungle_floor_lights(ci: CanvasItem, b: int, p: Dictionary, x0: float, x1: float) -> void:
+	for m in _floor_shrooms(b, x0, x1):
+		Painter.glow(ci, Vector2(m.x, _gy(b, m.x) - m.y * 0.8), m.y * 3.0, Color(p["bio"] if m.z < 0.5 else p["bio2"], 0.5))
+
+
+func _paint_jungle_front2(ci: CanvasItem, b: int, p: Dictionary, x0: float, top: float, floor_y: float) -> void:
+	var r := _rng(b, 28, x0)
+	var dark := Color(p["near"])
+	if r.randf() < 0.6:
+		var x := x0 + r.randf_range(0, CHUNK)
+		for k in 4:
+			Painter.big_leaf(ci, Vector2(x + k * 30.0, floor_y + 80), r.randf_range(140, 220), r.randf_range(-PI * 0.85, -PI * 0.15), dark)
+	if r.randf() < 0.6:
+		var x := x0 + r.randf_range(0, CHUNK)
+		for i in r.randi_range(5, 9):
+			Painter.hanging_vine(ci, Vector2(x + i * 22.0, top - 10), r.randf_range(120, 260), dark, r)
 
 
 # ------------------------------------------------------------------ rock and structures
@@ -470,28 +664,28 @@ func _paint_rock(ci: CanvasItem, piece: Rect2, whole: Rect2) -> void:
 	var b_below := RiftLayout.band_of(whole.end.y + 50.0)
 	var p_top := SeasonPalette.for_band(b_above)
 	var p_bottom := SeasonPalette.for_band(b_below)
-	var is_floor := RiftLayout.FLOORS.has(whole.position.y) and whole.size.y <= RiftLayout.FLOOR_T + 1.0 or whole.position.y == RiftLayout.FLOORS[4]
+	var last_floor: float = RiftLayout.FLOORS[RiftLayout.FLOORS.size() - 1]
+	var is_floor := (RiftLayout.FLOORS.has(whole.position.y) and whole.size.y <= RiftLayout.FLOOR_T + 1.0) or whole.position.y == last_floor
 	var is_wall := whole.position.y > RiftLayout.TOP and not is_floor
 	var p := SeasonPalette.for_band(RiftLayout.band_of(whole.get_center().y)) if is_wall else p_top
 	var rock: Color = p["rock"]
 	ci.draw_rect(piece, rock)
 	var floor_index := RiftLayout.FLOORS.find(whole.position.y) if is_floor else -1
-	if floor_index >= 0:  # rolling hills rise above the flat floor rect
+	if floor_index >= 0:  # terrain rises above the flat floor rect
 		var hill := PackedVector2Array([Vector2(piece.end.x, piece.position.y + 2), Vector2(piece.position.x, piece.position.y + 2)])
 		var hx := piece.position.x
 		while hx < piece.end.x:
 			hill.append(Vector2(hx, _gy(floor_index, hx)))
-			hx += 12.0
+			hx += 6.0
 		hill.append(Vector2(piece.end.x, _gy(floor_index, piece.end.x)))
 		ci.draw_colored_polygon(hill, rock)
-	# texture: darker and lighter pebbles
 	var n := int(clampf(piece.get_area() / 3500.0, 4, 70))
 	for k in n:
 		var c := Vector2(r.randf_range(piece.position.x, piece.end.x), r.randf_range(piece.position.y + 6, piece.end.y))
 		Painter.blob(ci, c, Vector2(r.randf_range(6, 22), r.randf_range(4, 12)), rock.lightened(0.05) if k % 3 == 0 else rock.darkened(0.25), r, 9, 0.25)
 	if is_floor:
 		_paint_cap(ci, piece, p_top, RiftLayout.BAND_SEASON[b_above], r, floor_index)
-	if whole.position.y < RiftLayout.TOP or (is_floor and whole.position.y < RiftLayout.FLOORS[4]):
+	if whole.position.y < RiftLayout.TOP or (is_floor and whole.position.y < last_floor):
 		_paint_underside(ci, piece, p_bottom, RiftLayout.BAND_SEASON[b_below], r)
 	if is_wall:
 		var rim: Color = p["rock_rim"]
@@ -515,7 +709,7 @@ func _paint_cap(ci: CanvasItem, piece: Rect2, p: Dictionary, season: RiftLayout.
 	var rx := piece.position.x
 	while rx <= piece.end.x:
 		rim_line.append(Vector2(rx, surface.call(rx) + 1.0))
-		rx += 12.0
+		rx += 6.0
 	ci.draw_polyline(rim_line, Color(rim, 0.55), 2.0, true)
 	var cap: Color = p["cap"]
 	var cap2: Color = p["cap2"]
@@ -563,24 +757,24 @@ func _paint_underside(ci: CanvasItem, piece: Rect2, p: Dictionary, season: RiftL
 func _build_columns() -> void:
 	var back := _layer(1.0, Z_COLUMN, "Sanctuaries")
 	var glows := _layer(1.0, Z_LIGHT, "SanctuaryLights")
+	var bottom: float = RiftLayout.FLOORS[RiftLayout.FLOORS.size() - 1]
 	for team in [0, 1]:
 		var x0 := 0.0 if team == 0 else W - RiftLayout.COL_W
 		var tc := Color("4ea4ff") if team == 0 else Color("ff5b5e")
-		for cy in _chunks(RiftLayout.TOP, RiftLayout.FLOORS[4]):
-			var seg := Rect2(x0, maxf(cy, RiftLayout.TOP), RiftLayout.COL_W, minf(cy + CHUNK, RiftLayout.FLOORS[4]) - maxf(cy, RiftLayout.TOP))
+		for cy in _chunks(RiftLayout.TOP, bottom):
+			var seg := Rect2(x0, maxf(cy, RiftLayout.TOP), RiftLayout.COL_W, minf(cy + CHUNK, bottom) - maxf(cy, RiftLayout.TOP))
 			_chunk(back, func(ci: CanvasItem) -> void: _paint_column(ci, seg, tc, team))
 		_chunk(glows, func(ci: CanvasItem) -> void:
 			for lane in RiftLayout.LANES:
 				var fy: float = RiftLayout.FLOORS[lane]
 				Painter.glow(ci, Vector2(x0 + RiftLayout.COL_W * 0.5, fy - 150), 240.0, Color(tc, 0.45))
-			Painter.glow(ci, Vector2(x0 + RiftLayout.COL_W * 0.5, RiftLayout.FLOORS[2] - 150), 90.0, Color(1, 1, 1, 0.55)), _add)
+				Painter.glow(ci, Vector2(x0 + RiftLayout.COL_W * 0.5, fy - 150), 80.0, Color(1, 1, 1, 0.45)), _add)
 
 
 func _paint_column(ci: CanvasItem, seg: Rect2, tc: Color, team: int) -> void:
 	var stone := Color("12161e")
 	Painter.gradient_rect(ci, seg, stone.lerp(tc, 0.06), stone.darkened(0.2))
 	var r := _rng(9, team, seg.position.y)
-	# pillars on both sides and carved arches between floors
 	for side in [seg.position.x + 14.0, seg.end.x - 14.0]:
 		ci.draw_rect(Rect2(side - 12, seg.position.y, 24, seg.size.y), Color("0b0e13"))
 		ci.draw_line(Vector2(side - 12, seg.position.y), Vector2(side - 12, seg.end.y), Color(tc, 0.25), 2.0)
@@ -591,11 +785,10 @@ func _paint_column(ci: CanvasItem, seg: Rect2, tc: Color, team: int) -> void:
 		var cx := seg.position.x + seg.size.x * 0.5
 		ci.draw_arc(Vector2(cx, fy - 200), 150.0, PI, TAU, 32, Color(tc, 0.35), 3.0)
 		ci.draw_arc(Vector2(cx, fy - 200), 162.0, PI, TAU, 32, Color("0b0e13"), 8.0)
-		# team crystal
 		var c := Vector2(cx, fy - 150)
-		var crystal := PackedVector2Array([c + Vector2(0, -60), c + Vector2(26, -6), c + Vector2(0, 46), c + Vector2(-26, -6)])
-		ci.draw_colored_polygon(crystal, tc.darkened(0.15))
-		ci.draw_colored_polygon(PackedVector2Array([c + Vector2(0, -60), c + Vector2(26, -6), c + Vector2(0, 6)]), tc.lightened(0.35))
+		if lane != 2:  # the middle lane's crystal is the Core structure, drawn by the match
+			ci.draw_colored_polygon(PackedVector2Array([c + Vector2(0, -60), c + Vector2(26, -6), c + Vector2(0, 46), c + Vector2(-26, -6)]), tc.darkened(0.15))
+			ci.draw_colored_polygon(PackedVector2Array([c + Vector2(0, -60), c + Vector2(26, -6), c + Vector2(0, 6)]), tc.lightened(0.35))
 		for k in 3:
 			var sc := c + Vector2(r.randf_range(-110, 110), r.randf_range(-60, 80))
 			ci.draw_colored_polygon(PackedVector2Array([sc + Vector2(0, -16), sc + Vector2(7, 0), sc + Vector2(0, 12), sc + Vector2(-7, 0)]), Color(tc, 0.6))
@@ -603,74 +796,75 @@ func _paint_column(ci: CanvasItem, seg: Rect2, tc: Color, team: int) -> void:
 
 func _build_platforms(platforms: Array) -> void:
 	var layer := _layer(1.0, Z_ROCK, "Platforms")
+	var lights := _layer(1.0, Z_LIGHT, "PlatformLights")
+	var i := 0
 	for pl: Dictionary in platforms:
 		var rect: Rect2 = pl["rect"]
 		var kind: StringName = pl["kind"]
 		var b: int = pl["band"]
-		_chunk(layer, func(ci: CanvasItem) -> void: _paint_platform(ci, rect, kind, b))
+		var style := i % 3
+		i += 1
+		_chunk(layer, func(ci: CanvasItem) -> void: _paint_platform(ci, rect, kind, b, style))
+		if kind == &"stair" and style != 1:
+			var p := SeasonPalette.for_band(b)
+			_chunk(lights, func(ci: CanvasItem) -> void:
+				Painter.glow(ci, rect.get_center() + Vector2(0, 14), rect.size.x * 0.9, Color(p["bio2"] if style == 0 else p["bio"], 0.42)), _flicker)
 
 
-func _paint_platform(ci: CanvasItem, rect: Rect2, kind: StringName, b: int) -> void:
+func _paint_platform(ci: CanvasItem, rect: Rect2, kind: StringName, b: int, style: int) -> void:
 	var p := SeasonPalette.for_band(b)
 	var r := _rng(int(rect.position.x), int(rect.position.y), 11)
 	var season: RiftLayout.Season = RiftLayout.BAND_SEASON[b]
+	var x0 := rect.position.x
+	var x1 := rect.end.x
+	var y := rect.position.y
 	match kind:
 		&"column":
-			var team_color := Color("4ea4ff") if rect.position.x < W * 0.5 else Color("ff5b5e")
-			var x0 := rect.position.x
-			var x1 := rect.end.x
-			var y := rect.position.y
+			var team_color := Color("4ea4ff") if x0 < W * 0.5 else Color("ff5b5e")
 			ci.draw_colored_polygon(PackedVector2Array([Vector2(x0, y), Vector2(x1, y), Vector2(x1 - 6, y + 14), Vector2(x0 + 6, y + 14)]), Color("1d232e"))
 			ci.draw_rect(Rect2(x0, y, rect.size.x, 3), Color("6a7488"))
-			for bx in [x0 + 22.0, x1 - 22.0]:  # brackets
+			for bx in [x0 + 22.0, x1 - 22.0]:
 				ci.draw_colored_polygon(PackedVector2Array([Vector2(bx - 9, y + 14), Vector2(bx + 9, y + 14), Vector2(bx, y + 34)]), Color("161b24"))
 			var gem := Vector2((x0 + x1) * 0.5, y + 7)
 			ci.draw_colored_polygon(PackedVector2Array([gem + Vector2(0, -5), gem + Vector2(5, 0), gem + Vector2(0, 5), gem + Vector2(-5, 0)]), team_color)
-		&"connector":
-			var wood := Color(p["mid"]).darkened(0.2)
-			var x := rect.position.x
-			while x < rect.end.x - 2:
-				ci.draw_rect(Rect2(x, rect.position.y, 16, 10), wood)
+		&"bridge":
+			var wood := Color("3a2a1e")
+			var x := x0
+			while x < x1 - 2:
+				ci.draw_rect(Rect2(x, y, 16, 10), wood)
 				x += 20
-			ci.draw_line(rect.position + Vector2(0, 1), rect.position + Vector2(rect.size.x, 1), Color("ffc443", 0.85), 2.0)
+			ci.draw_line(Vector2(x0, y + 1), Vector2(x1, y + 1), Color("ffc443", 0.85), 2.0)
 			for k in 3:
-				ci.draw_circle(rect.position + Vector2(rect.size.x * (k + 0.5) / 3.0, 5), 2.0, Color("ffc443"))
-		_:
+				ci.draw_circle(Vector2(x0 + rect.size.x * (k + 0.5) / 3.0, y + 5), 2.0, Color("ffc443"))
+		&"stair":  # jungle climbs: glowing mushroom caps and mossy branches
+			if style == 1:
+				var bark := Color(p["mid"]).darkened(0.2)
+				ci.draw_colored_polygon(PackedVector2Array([Vector2(x0 - 20, y + 4), Vector2(x0, y - 2), Vector2(x1, y - 2), Vector2(x1 + 26, y + 6), Vector2(x1, y + 14), Vector2(x0, y + 14)]), bark)
+				Painter.blob(ci, Vector2(x0 + rect.size.x * 0.3, y - 2), Vector2(30, 6), Color(p["cap"]), r, 10, 0.2)
+				Painter.blob(ci, Vector2(x0 + rect.size.x * 0.75, y - 2), Vector2(24, 5), Color(p["cap2"]), r, 10, 0.2)
+				for k in 3:
+					Painter.hanging_vine(ci, Vector2(x0 + rect.size.x * (0.2 + 0.3 * k), y + 12), r.randf_range(30, 70), Color(p["cap"]).darkened(0.3), r)
+			else:
+				var capc := Color(p["bio2"] if style == 0 else p["bio"]).darkened(0.35)
+				var stalk := Color("bfd6cc").darkened(0.55)
+				var cx := (x0 + x1) * 0.5
+				ci.draw_colored_polygon(PackedVector2Array([Vector2(cx - 12, y + 10), Vector2(cx + 12, y + 10), Vector2(cx + 8, y + 120), Vector2(cx - 8, y + 120)]), stalk)
+				var dome := PackedVector2Array([Vector2(x0 - 8, y + 2), Vector2(x0 + 6, y - 3), Vector2(x1 - 6, y - 3), Vector2(x1 + 8, y + 2)])
+				for k in range(1, 8):
+					var a := PI * k / 8.0
+					dome.append(Vector2(cx + cos(a) * (rect.size.x * 0.5 + 8.0), y + 2 + sin(a) * 20.0))
+				ci.draw_colored_polygon(dome, capc)
+				ci.draw_line(Vector2(x0 - 4, y), Vector2(x1 + 4, y), capc.lightened(0.45), 2.0)
+				for k in 4:
+					ci.draw_circle(Vector2(x0 + rect.size.x * (0.15 + 0.23 * k), y + 7 + (k % 2) * 4), 3.0, Color(1, 1, 1, 0.55))
+		&"outcrop":  # lane-side climbs: floating rock ledges with the lane's season on top
 			var stone: Color = p["rock"]
-			var pts := PackedVector2Array([
-				rect.position + Vector2(-6, 2), rect.position + Vector2(4, -2), Vector2(rect.end.x - 4, rect.position.y - 2),
-				Vector2(rect.end.x + 6, rect.position.y + 2), Vector2(rect.end.x - 10, rect.position.y + 16),
-				rect.position + Vector2(rect.size.x * 0.5, 22), rect.position + Vector2(10, 16)])
-			ci.draw_colored_polygon(pts, stone)
-			ci.draw_line(rect.position + Vector2(0, 0), rect.position + Vector2(rect.size.x, 0), Color(p["rock_rim"], 0.6), 2.0)
-			_paint_cap(ci, Rect2(rect.position.x + 2, rect.position.y - 2, rect.size.x - 4, 4), p, season, r)
-			for k in 2:
-				var hx := rect.position.x + rect.size.x * (0.25 + 0.5 * k)
-				if season == S.WINTER:
-					Painter.icicle(ci, Vector2(hx, rect.position.y + 14), r.randf_range(14, 30), Color(p["accent2"], 0.85))
-				else:
-					Painter.hanging_vine(ci, Vector2(hx, rect.position.y + 14), r.randf_range(20, 50), Color(p["cap"]).darkened(0.3), r)
-
-
-func _build_pads(pads: Array) -> void:
-	var layer := _layer(1.0, Z_DECOR, "Pads")
-	var glows := _layer(1.0, Z_LIGHT, "PadLights")
-	for pad: Vector2 in pads:
-		var b := RiftLayout.band_of(pad.y)
-		var p := SeasonPalette.for_band(b)
-		var cap: Color = p["pad"]
-		_chunk(layer, func(ci: CanvasItem) -> void:
-			# bounce mushroom: stem, domed cap, spots, and a chevron hinting "hold Up"
-			ci.draw_colored_polygon(PackedVector2Array([pad + Vector2(-10, 0), pad + Vector2(10, 0), pad + Vector2(7, -26), pad + Vector2(-7, -26)]), Color("d9d2c3").darkened(0.35))
-			var dome := PackedVector2Array()
-			for k in 13:
-				var a := PI + PI * k / 12.0
-				dome.append(pad + Vector2(cos(a) * 40.0, -24.0 + sin(a) * 22.0))
-			ci.draw_colored_polygon(dome, cap.darkened(0.15))
-			ci.draw_line(pad + Vector2(-40, -24), pad + Vector2(40, -24), cap.darkened(0.45), 3.0)
-			for k in 4:
-				ci.draw_circle(pad + Vector2(-24 + k * 16, -34 - (k % 2) * 6), 3.5, Color(1, 1, 1, 0.7))
-			for k in 2:
-				var yy := -60.0 - k * 14.0
-				ci.draw_polyline(PackedVector2Array([pad + Vector2(-10, yy + 7), pad + Vector2(0, yy), pad + Vector2(10, yy + 7)]), Color(cap, 0.8 - k * 0.3), 3.0, true))
-		_chunk(glows, func(ci: CanvasItem) -> void: Painter.glow(ci, pad + Vector2(0, -36), 110.0, Color(cap, 0.5)), _add)
+			ci.draw_colored_polygon(PackedVector2Array([
+				Vector2(x0 - 8, y + 2), Vector2(x0 + 6, y - 2), Vector2(x1 - 6, y - 2), Vector2(x1 + 8, y + 2),
+				Vector2(x1 - 14, y + 22), Vector2((x0 + x1) * 0.5 + 10, y + 40), Vector2((x0 + x1) * 0.5 - 16, y + 34), Vector2(x0 + 10, y + 20)]), stone)
+			ci.draw_line(Vector2(x0, y), Vector2(x1, y), Color(p["rock_rim"], 0.6), 2.0)
+			_paint_cap(ci, Rect2(x0 + 2, y - 2, rect.size.x - 4, 4), p, season, r)
+			Painter.blob(ci, Vector2((x0 + x1) * 0.5 + r.randf_range(-30, 30), y + 58), Vector2(14, 10), stone, r, 9, 0.25)
+			if season == S.WINTER:
+				for k in 3:
+					Painter.icicle(ci, Vector2(x0 + rect.size.x * (0.25 + 0.25 * k), y + 18), r.randf_range(12, 26), Color(p["accent2"], 0.85))

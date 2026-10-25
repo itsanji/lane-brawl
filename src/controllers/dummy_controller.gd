@@ -7,6 +7,7 @@ const MODE_NAMES := ["Stand still", "Guard everything", "Jump", "Attack (Light, 
 
 var mode := Mode.STAND
 var target: Fighter
+var home_x := NAN  ## when set, the dummy walks back to this x after being knocked away (Rift sparring)
 var _t := 0
 var _phase := 0
 
@@ -27,6 +28,10 @@ func read(f: Fighter, _world: CombatWorld) -> InputFrame:
 		return i
 	var dx := target.position.x - f.position.x
 	var dir := int(signf(dx)) if dx != 0.0 else f.facing
+	if not is_nan(home_x) and f.is_actionable() and f.combo == 0 and absf(f.position.x - home_x) > 40.0 \
+			and (mode == Mode.STAND or absf(dx) > 200.0):
+		i.x = int(signf(home_x - f.position.x))
+		return i
 	match mode:
 		Mode.GUARD:
 			if f.is_actionable() and f.state != &"guard" and f.facing != dir:

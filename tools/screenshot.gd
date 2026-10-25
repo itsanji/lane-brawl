@@ -40,6 +40,7 @@ class ScriptedController extends FighterController:
 
 
 func _initialize() -> void:
+	physics_interpolation = false  # we step the sim by hand here
 	var args := OS.get_cmdline_user_args()
 	var out_dir := args[0] if args.size() > 0 else "user://screenshots"
 	DirAccess.make_dir_recursive_absolute(out_dir)

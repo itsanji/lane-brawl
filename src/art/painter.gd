@@ -341,3 +341,66 @@ static func bamboo_fence(ci: CanvasItem, x0: float, x1: float, ground: Callable,
 		x += 14.0
 	for frac: float in [0.35, 0.75]:
 		ci.draw_line(Vector2(x0 - 6, ground.call(x0) - h * frac), Vector2(x1 + 6, ground.call(x1) - h * frac), color.darkened(0.3), 3.0)
+
+
+# ------------------------------------------------------------------ jungle (enclosed, bioluminescent)
+
+## Giant trunk rising through the whole jungle, with root flare, bark grooves and a few knots.
+static func giant_trunk(ci: CanvasItem, x: float, top: float, bottom: float, w: float, color: Color, rng: RandomNumberGenerator) -> void:
+	var sway := rng.randf_range(-0.08, 0.08) * (bottom - top)
+	var pts := PackedVector2Array([
+		Vector2(x - w * 1.6, bottom), Vector2(x - w * 0.55, bottom - w * 0.9), Vector2(x - w * 0.5 + sway * 0.5, (top + bottom) * 0.5),
+		Vector2(x - w * 0.45 + sway, top - 20), Vector2(x + w * 0.45 + sway, top - 20), Vector2(x + w * 0.5 + sway * 0.5, (top + bottom) * 0.5),
+		Vector2(x + w * 0.55, bottom - w * 0.9), Vector2(x + w * 1.6, bottom)])
+	ci.draw_colored_polygon(pts, color)
+	var groove := color.darkened(0.25)
+	for k in 3:
+		var gx := x + (k - 1) * w * 0.28
+		ci.draw_polyline(PackedVector2Array([Vector2(gx, bottom - w * 0.6), Vector2(gx + sway * 0.45, (top + bottom) * 0.5), Vector2(gx + sway * 0.95, top)]), groove, 2.0, true)
+	for k in rng.randi_range(1, 3):
+		blob(ci, Vector2(x + sway * 0.5 + rng.randf_range(-w * 0.2, w * 0.2), lerpf(top, bottom, rng.randf_range(0.25, 0.75))), Vector2(w * 0.16, w * 0.22), groove, rng, 10, 0.2)
+
+
+## Curtain of hanging roots from a ceiling.
+static func root_curtain(ci: CanvasItem, x0: float, x1: float, top: float, max_len: float, color: Color, rng: RandomNumberGenerator) -> void:
+	var x := x0
+	while x < x1:
+		var length := rng.randf_range(0.3, 1.0) * max_len
+		var pts := PackedVector2Array()
+		var phase := rng.randf() * TAU
+		for k in 7:
+			var t := k / 6.0
+			pts.append(Vector2(x + sin(phase + t * 3.0) * 5.0 * t, top + length * t))
+		ci.draw_polyline(pts, color, rng.randf_range(1.5, 3.5), true)
+		x += rng.randf_range(6, 18)
+
+
+## Big drooping leaf (like a giant philodendron) from a stem base.
+static func big_leaf(ci: CanvasItem, base: Vector2, size: float, angle: float, color: Color) -> void:
+	var dir := Vector2.from_angle(angle)
+	var n := dir.orthogonal()
+	var tip := base + dir * size + Vector2(0, size * 0.25)
+	var mid := base + dir * size * 0.5
+	ci.draw_colored_polygon(PackedVector2Array([base, mid + n * size * 0.32, tip, mid - n * size * 0.32]), color)
+	ci.draw_line(base, tip, color.darkened(0.3), 1.5)
+
+
+## Glowing mushroom: stalk and domed cap with spots (glow is drawn separately, additively).
+static func glow_mushroom(ci: CanvasItem, base: Vector2, size: float, stalk: Color, cap: Color) -> void:
+	ci.draw_colored_polygon(PackedVector2Array([base + Vector2(-size * 0.12, 0), base + Vector2(size * 0.12, 0),
+		base + Vector2(size * 0.08, -size * 0.75), base + Vector2(-size * 0.08, -size * 0.75)]), stalk)
+	var dome := PackedVector2Array()
+	for k in 13:
+		var a := PI + PI * k / 12.0
+		dome.append(base + Vector2(cos(a) * size * 0.5, -size * 0.72 + sin(a) * size * 0.38))
+	ci.draw_colored_polygon(dome, cap)
+	for k in 3:
+		ci.draw_circle(base + Vector2((k - 1) * size * 0.22, -size * (0.9 + 0.06 * (k % 2))), size * 0.05, Color(1, 1, 1, 0.75))
+
+
+## Fern: arcs of leaflets from a base.
+static func fern(ci: CanvasItem, base: Vector2, size: float, color: Color, rng: RandomNumberGenerator) -> void:
+	for k in rng.randi_range(4, 6):
+		var a := lerpf(-PI * 0.9, -PI * 0.1, (k + rng.randf_range(-0.2, 0.2)) / 5.0)
+		var tip := base + Vector2(cos(a) * size, sin(a) * size * 0.8) + Vector2(0, size * 0.25)
+		frond(ci, base, tip, size * 0.12, color)

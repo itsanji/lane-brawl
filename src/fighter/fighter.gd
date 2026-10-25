@@ -39,6 +39,11 @@ var hitstop := 0
 var air_jumps := 1
 var drop_timer := 0
 var pad_timer := 0
+var dash_cooldown := 0
+var dash_dir := 0
+var air_dash_used := false
+var jump_rising := false  ## a held-jump that can still be cut short
+var land_squash := 0      ## visual only
 var dodge_dir := 0
 var dodge_cooldown := 0
 var parry_timer := 0
@@ -46,6 +51,18 @@ var counter_timer := 0
 var wake_invuln := 0
 var knock_on_land := false
 var flash := 0
+var ko_ticks := 0
+
+# match progression (kept across deaths; reset_to doesn't touch them)
+var level := 1
+var xp := 0.0
+var gold := 0
+var kills := 0
+var deaths := 0
+var assists := 0
+var cs := 0              ## minions last-hit
+var respawn_timer := 0   ## ticks until respawn while KO'd in a match
+var damage_buff := 0.0   ## team buffs (Wyrm)
 
 var input := InputFrame.new()
 var prev_input := InputFrame.new()
@@ -73,8 +90,9 @@ func reset_to(spawn: Vector2, face: int) -> void:
 	hit_ids.clear()
 	connected = false
 	ex = false
-	hp = data.max_hp
+	hp = max_hp()
 	meter = 0.0
+	ko_ticks = 0
 	guard = CombatRules.GUARD_MAX
 	cooldowns = {&"S1": 0, &"S2": 0}
 	end_combo()
@@ -83,12 +101,31 @@ func reset_to(spawn: Vector2, face: int) -> void:
 	air_jumps = data.air_jumps
 	drop_timer = 0
 	pad_timer = 0
+	dash_cooldown = 0
+	air_dash_used = false
+	jump_rising = false
 	dodge_cooldown = 0
 	parry_timer = 0
 	counter_timer = 0
 	knock_on_land = false
 	buffered = &""
 	buffer_timer = 0
+	if is_inside_tree():
+		reset_physics_interpolation()  # teleport: don't smear between old and new position
+
+
+## Max HP grows 8% per level.
+func max_hp() -> float:
+	return data.max_hp * (1.0 + 0.08 * (level - 1))
+
+
+## Damage multiplier: fighter base, +5% per level, team buffs.
+func power() -> float:
+	return data.damage_mult * (1.0 + 0.05 * (level - 1)) * (1.0 + damage_buff)
+
+
+func is_ko() -> bool:
+	return state == &"ko"
 
 
 func is_actionable() -> bool:
@@ -127,12 +164,16 @@ func active_hitbox() -> Rect2:
 func read_input() -> void:
 	prev_input = input
 	input = controller.read(self, world) if controller != null else InputFrame.new()
-	# Several buttons pressed on the same tick: Guard has the lowest priority,
-	# so Guard + Light is a grab and Guard + Heavy is a burst.
+	# Several buttons pressed on the same tick: attacks, skills and dash win over jump, and jump over
+	# guard — so Guard + Light is a grab, Guard + Heavy a burst and W + K (up + heavy) a launcher.
 	var pressed: StringName = &""
+	var best := -1
 	for b in InputFrame.BUTTONS:
-		if input.get(b) and not prev_input.get(b) and (pressed == &"" or pressed == &"guard"):
-			pressed = b
+		if input.get(b) and not prev_input.get(b):
+			var rank := 0 if b == &"guard" else (1 if b == &"jump" else 2)
+			if rank > best:
+				best = rank
+				pressed = b
 	if pressed != &"":
 		buffered = pressed
 		buffer_timer = CombatRules.BUFFER_FRAMES
@@ -156,6 +197,16 @@ func sim_tick() -> void:
 			_neutral()
 		&"attack":
 			_step_attack()
+		&"jumpsquat":
+			_step_jumpsquat()
+		&"dash":
+			vel.x = dash_dir * CombatRules.DASH_SPEED
+			if state_timer % 2 == 0:
+				world.add_effect(&"ghost", position, {"life": 12, "color": data.color, "facing": facing})
+			state_timer -= 1
+			if state_timer <= 0:
+				state = &"idle" if grounded else &"air"
+				vel.x = dash_dir * data.run_speed
 		&"hitstun":
 			if not _try_burst():
 				vel.x *= 0.85
@@ -216,6 +267,7 @@ func sim_tick() -> void:
 				state = &"idle" if grounded else &"air"
 		&"ko":
 			vel.x *= 0.85
+			ko_ticks += 1
 	_apply_physics()
 	if buffer_timer > 0:
 		buffer_timer -= 1
@@ -235,6 +287,8 @@ func _tick_timers() -> void:
 	dodge_cooldown = maxi(0, dodge_cooldown - 1)
 	drop_timer = maxi(0, drop_timer - 1)
 	pad_timer = maxi(0, pad_timer - 1)
+	dash_cooldown = maxi(0, dash_cooldown - 1)
+	land_squash = maxi(0, land_squash - 1)
 	flash = maxi(0, flash - 1)
 	if state != &"guard" and state != &"blockstun":
 		guard = minf(CombatRules.GUARD_MAX, guard + CombatRules.GUARD_REGEN)
@@ -251,6 +305,9 @@ func _neutral() -> void:
 		return
 	if b == &"s2" and cooldowns[&"S2"] <= 0 and data.moves.has(&"S2"):
 		start_move(&"S2")
+		return
+	if b == &"dash" and dash_cooldown <= 0 and (grounded or not air_dash_used):
+		_start_dash(i.x if i.x != 0 else facing)
 		return
 	if b == &"light" and i.guard and grounded:
 		start_move(&"GRAB")
@@ -288,16 +345,26 @@ func _neutral() -> void:
 			if i.y > 0 and on_one_way:
 				drop_timer = CombatRules.DROP_FRAMES
 				position.y += 3.0
+				grounded = false
 			else:
-				vel.y = CombatRules.JUMP_VELOCITY
-			grounded = false
+				state = &"jumpsquat"
+				state_timer = CombatRules.JUMPSQUAT_FRAMES
+				return
 		elif air_jumps > 0:
 			air_jumps -= 1
 			vel.y = CombatRules.AIR_JUMP_VELOCITY
+			jump_rising = true
 			world.add_effect(&"ring", position, {"radius": 34.0, "life": 10, "color": Color(1, 1, 1, 0.5)})
+	if jump_rising and not i.jump and vel.y < CombatRules.JUMP_CUT_VELOCITY:
+		vel.y = CombatRules.JUMP_CUT_VELOCITY  # released early: short hop
+		jump_rising = false
 	if grounded:
-		vel.x = i.x * data.run_speed
-		state = &"run" if i.x != 0 else &"idle"
+		var target := i.x * data.run_speed
+		var rate := CombatRules.RUN_DECEL
+		if i.x != 0:
+			rate = CombatRules.TURN_DECEL if vel.x * target < 0.0 else CombatRules.RUN_ACCEL
+		vel.x = move_toward(vel.x, target, rate)
+		state = &"run" if i.x != 0 or absf(vel.x) > 0.5 else &"idle"
 	elif pad_timer > 0:
 		vel.x *= 0.85  # flying straight up through the connector above
 		state = &"air"
@@ -376,6 +443,11 @@ func _step_attack() -> void:
 			if buffered == &"ult" and meter >= CombatRules.METER_MAX and data.moves.has(&"ULT"):
 				start_move(&"ULT")
 				return
+			if buffered == &"dash" and dash_cooldown <= 0 and (grounded or not air_dash_used):
+				_clear_buffer()
+				move = null
+				_start_dash(input.x if input.x != 0 else facing)
+				return
 		if buffered == &"jump" and connected and m.jump_cancel:
 			_clear_buffer()
 			move = null
@@ -393,6 +465,39 @@ func _step_attack() -> void:
 			return
 		move = null
 		state = &"idle" if grounded else &"air"
+
+
+func _start_dash(dir: int) -> void:
+	_clear_buffer()
+	state = &"dash"
+	state_timer = CombatRules.DASH_FRAMES
+	dash_dir = dir
+	facing = dir
+	dash_cooldown = CombatRules.DASH_COOLDOWN
+	vel.y = 0.0
+	jump_rising = false
+	if not grounded:
+		air_dash_used = true
+	world.add_effect(&"dust", position, {"life": 14, "dir": -dir})
+
+
+## Pre-jump frames. An attack pressed here becomes a ground attack instead (W + K = launcher).
+func _step_jumpsquat() -> void:
+	vel.x *= 0.9
+	if buffered == &"heavy" or buffered == &"light":
+		var y := buffer_y if buffer_y != 0 else input.y
+		if buffered == &"heavy":
+			start_move(&"UH" if y < 0 else (&"DH" if y > 0 else &"H"))
+		else:
+			start_move(&"L1")
+		return
+	state_timer -= 1
+	if state_timer <= 0:
+		vel.y = CombatRules.JUMP_VELOCITY
+		grounded = false
+		jump_rising = true
+		state = &"air"
+		world.add_effect(&"dust", position, {"life": 12, "dir": 0})
 
 
 func _try_burst() -> bool:
@@ -419,10 +524,20 @@ func knock_out(dir: int) -> void:
 func _apply_physics() -> void:
 	if state == &"held":
 		return
-	vel.y = minf(CombatRules.MAX_FALL, vel.y + CombatRules.GRAVITY)
+	var was_grounded := grounded
+	if state == &"dash":
+		vel.y = 0.0  # dashes fly straight, even in the air
+	else:
+		vel.y = minf(CombatRules.MAX_FALL, vel.y + CombatRules.GRAVITY)
 	world.move_body(self)
+	if vel.y >= 0.0:
+		jump_rising = false
 	if grounded:
 		air_jumps = data.air_jumps
+		air_dash_used = false
+		if not was_grounded:
+			land_squash = 6
+			world.add_effect(&"dust", position, {"life": 12, "dir": 0})
 		if (state == &"idle" or state == &"run") and input.y < 0:
 			for pad in world.jump_pads:
 				if absf(position.y - pad.y) < 1.0 and absf(position.x - pad.x) < CombatRules.PAD_HALF_WIDTH:
@@ -445,6 +560,8 @@ const NAIL := Color("d9dde6")
 
 
 func _draw() -> void:
+	if state == &"ko" and ko_ticks > 70:
+		return  # gone until respawn
 	var team_color := Color("4ea4ff") if team == 0 else Color("ff5b5e")
 	var t := float(world.tick) if world != null else 0.0
 	var blink := invuln > 0 and invuln < 900 and state != &"knockdown" and state != &"tumble" and int(t / 4.0) % 2 == 1
@@ -465,6 +582,8 @@ func _draw() -> void:
 			rot = -facing * 0.18
 		&"run":
 			rot = facing * 0.08
+		&"dash":
+			rot = facing * 0.32
 	draw_set_transform(Vector2(0, -36), rot)
 	var o := Vector2(0, 36)  # local feet position in the rotated frame
 
@@ -473,6 +592,12 @@ func _draw() -> void:
 	var air := not grounded
 	var anticipation := state == &"attack" and move != null and move_frame <= move.startup
 	var squash := 0.94 if anticipation else 1.0
+	if state == &"jumpsquat":
+		squash = 0.84
+	elif land_squash > 0:
+		squash = 1.0 - land_squash * 0.025
+	elif not grounded and vel.y < -4.0:
+		squash = 1.06  # stretch while rising
 	var breathe := sin(t * 0.08) * 1.2 if state == &"idle" else 0.0
 
 	# legs
@@ -548,10 +673,10 @@ func _draw() -> void:
 	if hb.has_area():
 		_draw_slash(Rect2(hb.position - position, hb.size))
 
-	if hp < data.max_hp and state != &"ko":
+	if hp < max_hp() and state != &"ko":
 		var bw := 36.0
 		draw_rect(Rect2(-bw / 2.0, -104, bw, 3), Color(0, 0, 0, 0.6))
-		draw_rect(Rect2(-bw / 2.0, -104, bw * clampf(hp / data.max_hp, 0.0, 1.0), 3), team_color)
+		draw_rect(Rect2(-bw / 2.0, -104, bw * clampf(hp / max_hp(), 0.0, 1.0), 3), team_color)
 
 	if world != null and world.debug_draw:
 		var hurt := hurtbox()

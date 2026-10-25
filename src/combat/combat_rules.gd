@@ -10,8 +10,17 @@ const MAX_FALL := 18.0
 const JUMP_VELOCITY := -17.0
 const AIR_JUMP_VELOCITY := -15.0
 const AIR_CONTROL := 0.18
+const RUN_ACCEL := 1.2               ## ground speed gained per tick (full speed in ~5 ticks)
+const RUN_DECEL := 1.6
+const TURN_DECEL := 2.6
+const JUMPSQUAT_FRAMES := 3          ## pressing an attack during these turns the jump into a ground attack (W+K = launcher)
+const JUMP_CUT_VELOCITY := -6.0      ## releasing jump while rising cuts the jump short (tap = hop, hold = full)
+const DASH_SPEED := 15.0
+const DASH_FRAMES := 10
+const DASH_COOLDOWN := 40            ## ticks; one air dash per jump
 const BODY_SIZE := Vector2(34, 82)
 const DROP_FRAMES := 14
+const STEP_UP := 14.0              ## terrain rise you can walk up in one tick; more is a cliff
 const PAD_VELOCITY := -29.5         ## jump pad launch (hold Up on a pad)
 const PAD_HALF_WIDTH := 36.0
 const PAD_FLIGHT_FRAMES := 40       ## reduced air control while pad-launched
@@ -47,3 +56,33 @@ const METER_ON_HURT := 0.22          ## share of damage taken the victim gains a
 ## Damage multiplier for the next hit when the victim has already taken `hits_before` hits.
 static func combo_scale(hits_before: int) -> float:
 	return maxf(0.3, 1.0 - 0.1 * hits_before)
+
+# ---------------------------------------------------------------- lane, economy, levels
+
+const FIRST_WAVE := 5 * TICK_RATE        ## first minion wave
+const WAVE_INTERVAL := 25 * TICK_RATE    ## then one wave per team every 25 s
+const WAVE_SPACING := 34.0
+const TOWER_RANGE := 450.0
+const CORE_RANGE := 520.0
+const TOWER_AGGRO_FRAMES := 180          ## a tower targets whoever hits its team's fighters in range
+const BACKDOOR_MULT := 0.5               ## fighters deal half damage to structures without their own minions nearby
+const BACKDOOR_RADIUS := 520.0
+const MAX_LEVEL := 10
+const START_GOLD := 450
+const PASSIVE_GOLD := 3                  ## per second
+const KILL_GOLD := 250
+const ASSIST_GOLD := 100
+const KILL_XP := 120.0                   ## + 20 per victim level
+const ASSIST_XP := 60.0
+const ASSIST_WINDOW := 600               ## ticks a hit counts towards an assist
+const XP_RADIUS := 900.0                 ## minion and monster XP is shared by allies this close
+const RESPAWN_BASE := 4.0                ## seconds, + RESPAWN_PER_LEVEL per level
+const RESPAWN_PER_LEVEL := 1.2
+const RESPAWN_INVULN := 90
+const FOUNTAIN_HEAL := 0.012             ## share of max HP per tick inside your base
+const WYRM_BUFF := 0.1                   ## team damage per Wyrm kill, stacks to 3
+const TITAN_BUFF_FRAMES := 60 * TICK_RATE  ## empowered minions after a Titan kill
+
+
+static func xp_to_next(level: int) -> float:
+	return 140.0 + 90.0 * (level - 1)
